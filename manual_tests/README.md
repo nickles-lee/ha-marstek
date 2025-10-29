@@ -27,7 +27,7 @@ Standalone test script that:
 
 ```bash
 cd marstek-local-api
-python3 test/test_discovery.py
+python3 manual_tests/test_discovery.py
 ```
 
 ### Expected Output
@@ -163,7 +163,7 @@ This ensures the test validates the real code that will run in Home Assistant.
 If you get import errors, ensure you're running from the repository root:
 ```bash
 cd /path/to/marstek-local-api
-python3 test/test_discovery.py
+python3 manual_tests/test_discovery.py
 ```
 
 ### No Devices Found

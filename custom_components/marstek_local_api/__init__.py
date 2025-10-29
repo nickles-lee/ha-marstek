@@ -15,11 +15,12 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import MarstekDataUpdateCoordinator, MarstekMultiDeviceCoordinator
+from .ha_control import MarstekHAControlCoordinator
 from .services import async_setup_services, async_unload_services
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.SELECT]
+PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.SELECT, Platform.NUMBER]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -84,9 +85,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await coordinator.async_config_entry_first_refresh()
 
     # Store coordinator
-    hass.data[DOMAIN][entry.entry_id] = {
+    entry_data = {
         DATA_COORDINATOR: coordinator,
     }
+    
+    # Start HA-Controlled mode coordinator if enabled
+    if entry.options.get("ha_controlled_mode", False):
+        ha_control = MarstekHAControlCoordinator(hass, entry.entry_id, coordinator)
+        entry_data["ha_control"] = ha_control
+        await ha_control.async_start()
+        _LOGGER.info("Started HA-Controlled mode for entry %s", entry.entry_id)
+    
+    hass.data[DOMAIN][entry.entry_id] = entry_data
 
     if len(hass.data[DOMAIN]) == 1:
         await async_setup_services(hass)
@@ -111,8 +121,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     if unload_ok:
+        entry_data = hass.data[DOMAIN][entry.entry_id]
+        
+        # Stop HA-Controlled mode coordinator if running
+        if "ha_control" in entry_data:
+            await entry_data["ha_control"].async_stop()
+            _LOGGER.info("Stopped HA-Controlled mode for entry %s", entry.entry_id)
+        
         # Disconnect API(s)
-        coordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
+        coordinator = entry_data[DATA_COORDINATOR]
 
         if isinstance(coordinator, MarstekMultiDeviceCoordinator):
             # Disconnect all device APIs

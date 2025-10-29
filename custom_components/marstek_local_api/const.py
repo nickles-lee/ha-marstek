@@ -89,7 +89,26 @@ DATA_COORDINATOR: Final = "coordinator"
 DATA_DEVICE_INFO: Final = "device_info"
 
 # Platforms
-PLATFORMS: Final = ["sensor", "binary_sensor", "select"]
+PLATFORMS: Final = ["sensor", "binary_sensor", "select", "number"]
 
 # Services
 SERVICE_REQUEST_SYNC: Final = "request_data_sync"
+SERVICE_SET_MANUAL_SCHEDULE: Final = "set_manual_schedule"
+SERVICE_SET_SYSTEM_SCHEDULE: Final = "set_system_schedule"
+SERVICE_SET_PASSIVE_MODE: Final = "set_passive_mode"
+
+# HA-Controlled mode settings
+# Update every 2 minutes to maintain tight control over battery behavior
+HA_CONTROL_UPDATE_INTERVAL: Final = 120  # 2 minutes in seconds
+# Set a long countdown (2 hours) so the battery effectively always follows HA's target power.
+# If HA crashes or loses connection, battery continues with last command until countdown expires
+# or until HA is back online and an updated target power is pushed.
+HA_CONTROL_COUNTDOWN: Final = 7200  # 2 hours in seconds
+HA_CONTROL_MIN_POWER: Final = -2500  # Minimum discharge power (W)
+HA_CONTROL_MAX_POWER: Final = 2500  # Maximum charge power (W)
+
+# Verification settings for UDP reliability
+# UDP can drop packets, so we verify battery actually changed state after commands
+MODE_VERIFY_MAX_RETRIES: Final = 3  # Maximum verification attempts for services
+MODE_VERIFY_DELAY: Final = 2.0  # Seconds to wait before verifying mode change
+MODE_VERIFY_RETRY_DELAY: Final = 2.0  # Seconds between retry attempts

@@ -387,10 +387,52 @@ Options:
 - Manual: Time-based schedules
 - Passive: Fixed power control
 
-### Future Controls (via ES.SetMode)
-- Manual mode schedules
-- Power limit settings
-- Passive mode power/countdown
+### Advanced Control Services (via ES.SetMode)
+
+**Manual Mode Schedules:**
+- Service: `marstek_local_api.set_manual_schedule`
+- Configure up to 10 time-based power schedules (Venus C/E)
+- Parameters: time slot (0-9), start/end time, days of week, power, enable flag
+- Service: `marstek_local_api.set_system_schedule` - Apply schedule to all batteries
+- Note: Schedule retrieval not available (ES.GetMode doesn't return schedule details)
+
+**Passive Mode Control:**
+- Service: `marstek_local_api.set_passive_mode`
+- Set temporary power level with countdown timer
+- Parameters: power (W), countdown (seconds)
+- Use case: Dynamic control, testing, emergency overrides
+
+**HA-Controlled Mode:**
+- **Note:** NOT an official Marstek mode - HA construct using undocumented Passive mode
+- Number entity: `number.<device>_target_grid_power`
+- Range: -2500W (discharge) to +2500W (charge), 50W steps
+- Background coordinator sends Passive mode commands:
+  * Every 2 minutes to maintain tight control
+  * With 2-hour countdown so battery effectively always follows HA's target
+  * Long countdown provides resilience if HA loses connection temporarily
+- Automatically pauses if user manually changes mode
+- Ideal for dynamic pricing, solar following, automation-based control
+- Architecture: Monitors number entity, pushes Passive mode, detects manual mode changes
+
+### Future Controls
+
+The following control capabilities are planned but not yet available due to API limitations:
+
+**Schedule Management:**
+- Get manual mode schedules: ES.GetMode doesn't return `manual_cfg` details
+- Copy schedules between devices: Requires schedule retrieval capability
+- Query active/inactive time slots: Not exposed by current API
+
+**Power Management:**
+- Configure power limiting settings: API methods not documented
+- Set current limiting thresholds: API methods not documented
+- Battery charge/discharge rate controls: API methods not documented
+
+**Implementation Notes:**
+- These features require Marstek to extend the Local API specification
+- ES.GetMode would need to return full schedule configuration in response
+- Additional ES.GetConfig / ES.SetConfig methods may be needed for power limits
+- When available, services will follow same patterns as existing control features
 
 ---
 
