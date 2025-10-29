@@ -6,3 +6,80 @@ request_data_sync:
       name: Config Entry ID
       description: Optional config entry ID to refresh. When omitted, all entries are refreshed.
       example: "1234567890abcdef1234567890abcdef"
+
+set_manual_schedule:
+  name: Set Manual Schedule
+  description: Configure Manual mode schedule for a Marstek device.
+  fields:
+    device_id:
+      name: Device ID
+      description: Target device ID.
+      required: true
+      example: "abcd1234efgh5678ijkl9012mnop3456"
+      selector:
+        device:
+          integration: marstek_local_api
+    schedule:
+      name: Schedule Configuration
+      description: Schedule configuration as JSON object.
+      required: true
+      example: '{"time_num": 0, "start_time": "08:30", "end_time": "20:30", "week_set": 127, "power": 100, "enable": 1}'
+      selector:
+        object:
+
+set_system_schedule:
+  name: Set System Schedule
+  description: Apply the same Manual mode schedule to all batteries in a multi-device system.
+  fields:
+    entry_id:
+      name: Config Entry ID
+      description: Config entry ID for the multi-device system.
+      required: true
+      example: "1234567890abcdef1234567890abcdef"
+      selector:
+        config_entry:
+          integration: marstek_local_api
+    schedule:
+      name: Schedule Configuration
+      description: Schedule configuration as JSON object.
+      required: true
+      example: '{"time_num": 0, "start_time": "08:30", "end_time": "20:30", "week_set": 127, "power": 100, "enable": 1}'
+      selector:
+        object:
+
+set_passive_mode:
+  name: Set Passive Mode
+  description: Set Passive mode with custom power and countdown for a Marstek device.
+  fields:
+    device_id:
+      name: Device ID
+      description: Target device ID.
+      required: true
+      example: "abcd1234efgh5678ijkl9012mnop3456"
+      selector:
+        device:
+          integration: marstek_local_api
+    power:
+      name: Power (W)
+      description: Target power in watts. Positive values charge the battery, negative values discharge.
+      required: true
+      example: 100
+      selector:
+        number:
+          min: -2500
+          max: 2500
+          step: 50
+          unit_of_measurement: "W"
+          mode: box
+    countdown:
+      name: Countdown (seconds)
+      description: Duration in seconds before reverting to the previous mode.
+      required: true
+      example: 7200
+      selector:
+        number:
+          min: 0
+          max: 86400
+          step: 60
+          unit_of_measurement: "s"
+          mode: box

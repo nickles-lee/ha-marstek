@@ -198,6 +198,19 @@ def format_value(value, unit=""):
     return str(value)
 
 
+async def verify_mode_with_retries(api, expected_mode, max_attempts=3):
+    """Verify mode matches expected, with retries for UDP reliability."""
+    for attempt in range(1, max_attempts + 1):
+        await asyncio.sleep(2.0)  # Wait for mode to settle
+        mode_status = await api.get_es_mode()
+        if mode_status and mode_status.get("mode") == expected_mode:
+            return True
+        if attempt < max_attempts:
+            print(f"  ⏳ Verification attempt {attempt} failed, retrying...")
+            await asyncio.sleep(2.0)
+    return False
+
+
 async def discover_and_test():
     """Discover devices and test all API methods."""
     print("=" * 80)
@@ -428,6 +441,99 @@ async def discover_and_test():
                 else:
                     print("  ⚠️  Failed to get PV status")
                 print()
+            
+            # Test 9: Control Functionality - Passive Mode
+            await asyncio.sleep(2.0)  # Longer delay before control commands
+            print("🎮 Control Tests - Passive Mode")
+            print("-" * 80)
+            print("Testing Passive mode with custom power and countdown...")
+            
+            # Store original mode to restore later
+            original_mode = mode_status.get("mode") if mode_status else "Auto"
+            
+            # Test passive mode with 100W charge for 5 minutes
+            passive_config = {
+                "mode": "Passive",
+                "passive_cfg": {
+                    "power": 100,
+                    "cd_time": 300,  # 5 minutes
+                },
+            }
+            
+            try:
+                success = await api.set_es_mode(passive_config)
+                if success:
+                    print(f"  ✅ Successfully set Passive mode (100W, 300s)")
+                    
+                    # Verify with retries for UDP reliability
+                    if await verify_mode_with_retries(api, "Passive"):
+                        print(f"  ✅ Verified: Mode is now Passive")
+                    else:
+                        print(f"  ⚠️  Mode verification failed after retries")
+                else:
+                    print(f"  ❌ Failed to set Passive mode")
+            except Exception as err:
+                print(f"  ❌ Error setting Passive mode: {err}")
+            
+            print()
+            
+            # Test 10: Control Functionality - Manual Mode
+            await asyncio.sleep(2.0)  # Delay between control commands
+            print("🎮 Control Tests - Manual Mode")
+            print("-" * 80)
+            print("Testing Manual mode with schedule...")
+            
+            # Test manual mode with simple schedule
+            manual_config = {
+                "mode": "Manual",
+                "manual_cfg": {
+                    "time_num": 0,
+                    "start_time": "08:00",
+                    "end_time": "20:00",
+                    "week_set": 127,  # All days (Mon-Sun)
+                    "power": 200,
+                    "enable": 1,
+                },
+            }
+            
+            try:
+                success = await api.set_es_mode(manual_config)
+                if success:
+                    print(f"  ✅ Successfully set Manual mode (08:00-20:00, 200W, all days)")
+                    
+                    # Verify with retries for UDP reliability
+                    if await verify_mode_with_retries(api, "Manual"):
+                        print(f"  ✅ Verified: Mode is now Manual")
+                    else:
+                        print(f"  ⚠️  Mode verification failed after retries")
+                else:
+                    print(f"  ❌ Failed to set Manual mode")
+            except Exception as err:
+                print(f"  ❌ Error setting Manual mode: {err}")
+            
+            print()
+            
+            # Restore original mode
+            await asyncio.sleep(2.0)  # Delay before restore
+            print("🔄 Restoring original mode...")
+            print("-" * 80)
+            
+            try:
+                restore_config = {"mode": original_mode}
+                if original_mode == "Auto":
+                    restore_config["auto_cfg"] = {"enable": 1}
+                elif original_mode == "AI":
+                    restore_config["ai_cfg"] = {"enable": 1}
+                
+                success = await api.set_es_mode(restore_config)
+                if success:
+                    print(f"  ✅ Restored to {original_mode} mode")
+                else:
+                    print(f"  ⚠️  Failed to restore to {original_mode} mode")
+            except Exception as err:
+                print(f"  ⚠️  Error restoring mode: {err}")
+            
+            print()
 
     except PermissionError as err:
         print(f"❌ Unable to open UDP socket on port {DEFAULT_PORT}: {err}")
