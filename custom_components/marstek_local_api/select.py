@@ -11,10 +11,12 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers import entity_registry as er
 
 from .const import (
     DATA_COORDINATOR,
     DOMAIN,
+    HA_CONTROL_COUNTDOWN,
     MAX_RETRIES,
     MODE_AI,
     MODE_AUTO,
@@ -104,53 +106,39 @@ class MarstekOperatingModeSelect(CoordinatorEntity, SelectEntity):
 
         # Build config based on mode
         config = self._build_mode_config(option)
+        
+        _LOGGER.warning("📤 Setting operating mode to %s with config: %s", option, config)
 
-        success = False
-        last_error: str | None = None
+        # Retry logic as per design document
+        for attempt in range(MAX_RETRIES):
+            try:
+                success = await self.coordinator.api.set_es_mode(config)
 
-        try:
-            # Retry logic as per design document
-            for attempt in range(1, MAX_RETRIES + 1):
-                try:
-                    if await self.coordinator.api.set_es_mode(config):
-                        _LOGGER.info("Successfully set operating mode to %s", option)
-                        success = True
-                        break
+                if success:
+                    _LOGGER.info("✓ Successfully set operating mode to %s", option)
+                    # Request immediate refresh
+                    await self.coordinator.async_request_refresh()
+                    return
 
-                    last_error = "device rejected mode change"
-                    _LOGGER.warning(
-                        "Device rejected mode change (attempt %d/%d)",
-                        attempt,
-                        MAX_RETRIES,
-                    )
+                _LOGGER.warning(
+                    "Device rejected mode change (attempt %d/%d)",
+                    attempt + 1,
+                    MAX_RETRIES,
+                )
 
-                except Exception as err:
-                    last_error = str(err)
-                    _LOGGER.error(
-                        "Error setting mode (attempt %d/%d): %s",
-                        attempt,
-                        MAX_RETRIES,
-                        err,
-                    )
+            except Exception as err:
+                _LOGGER.error(
+                    "Error setting mode (attempt %d/%d): %s",
+                    attempt + 1,
+                    MAX_RETRIES,
+                    err,
+                )
 
-                # Wait before retry (except on last attempt)
-                if attempt < MAX_RETRIES:
-                    await asyncio.sleep(RETRY_DELAY)
-        finally:
-            await self._refresh_mode_data()
+            # Wait before retry (except on last attempt)
+            if attempt < MAX_RETRIES - 1:
+                await asyncio.sleep(RETRY_DELAY)
 
-        if success:
-            return
-
-        _LOGGER.error(
-            "Failed to set operating mode to %s after %d attempts",
-            option,
-            MAX_RETRIES,
-        )
-        message = f"Failed to set operating mode to {option}"
-        if last_error:
-            message = f"{message}: {last_error}"
-        raise HomeAssistantError(message)
+        _LOGGER.error("Failed to set operating mode after %d attempts", MAX_RETRIES)
 
     async def _refresh_mode_data(self) -> None:
         """Force a coordinator refresh so entities reflect the latest state."""
@@ -186,13 +174,36 @@ class MarstekOperatingModeSelect(CoordinatorEntity, SelectEntity):
                 },
             }
         elif mode == MODE_PASSIVE:
-            # Default passive mode config (no power limit, 5 min countdown)
-            # Users can customize via service calls in the future
+            # Get the current passive mode power from the number entity
+            # Use relative reference: derive from this entity's unique_id
+            target_power = 0  # Default to 0 if entity not found
+            
+            # This select entity has unique_id like "AA:BB:CC:DD:EE:FF_operating_mode_select"
+            # The number entity has unique_id like "AA:BB:CC:DD:EE:FF_target_grid_power"
+            # Extract the device prefix and construct the number entity's unique_id
+            if self.unique_id and "_operating_mode_select" in self.unique_id:
+                device_prefix = self.unique_id.replace("_operating_mode_select", "")
+                number_unique_id = f"{device_prefix}_target_grid_power"
+                
+                entity_reg = er.async_get(self.hass)
+                entity_id = entity_reg.async_get_entity_id("number", DOMAIN, number_unique_id)
+                
+                if entity_id:
+                    state = self.hass.states.get(entity_id)
+                    if state and state.state not in ('unknown', 'unavailable'):
+                        try:
+                            target_power = int(float(state.state))
+                        except (ValueError, TypeError):
+                            target_power = 0
+            
+            # Ensure integer value
+            target_power = int(target_power)
+            
             return {
                 "mode": MODE_PASSIVE,
                 "passive_cfg": {
-                    "power": 0,
-                    "cd_time": 300,
+                    "power": target_power,
+                    "cd_time": int(HA_CONTROL_COUNTDOWN),  # 2 hour countdown
                 },
             }
 
@@ -252,62 +263,41 @@ class MarstekMultiDeviceOperatingModeSelect(CoordinatorEntity, SelectEntity):
 
         # Build config based on mode
         config = self._build_mode_config(option)
+        
+        _LOGGER.warning("📤 Setting operating mode to %s for device %s with config: %s", option, self.device_mac, config)
 
-        success = False
-        last_error: str | None = None
+        # Retry logic as per design document
+        for attempt in range(MAX_RETRIES):
+            try:
+                success = await self.device_coordinator.api.set_es_mode(config)
 
-        try:
-            # Retry logic as per design document
-            for attempt in range(1, MAX_RETRIES + 1):
-                try:
-                    if await self.device_coordinator.api.set_es_mode(config):
-                        _LOGGER.info(
-                            "Successfully set operating mode to %s for device %s",
-                            option,
-                            self.device_mac,
-                        )
-                        success = True
-                        break
+                if success:
+                    _LOGGER.info("✓ Successfully set operating mode to %s for device %s", option, self.device_mac)
+                    # Request immediate refresh
+                    await self.coordinator.async_request_refresh()
+                    return
 
-                    last_error = "device rejected mode change"
-                    _LOGGER.warning(
-                        "Device %s rejected mode change (attempt %d/%d)",
-                        self.device_mac,
-                        attempt,
-                        MAX_RETRIES,
-                    )
+                _LOGGER.warning(
+                    "Device %s rejected mode change (attempt %d/%d)",
+                    self.device_mac,
+                    attempt + 1,
+                    MAX_RETRIES,
+                )
 
-                except Exception as err:
-                    last_error = str(err)
-                    _LOGGER.error(
-                        "Error setting mode for device %s (attempt %d/%d): %s",
-                        self.device_mac,
-                        attempt,
-                        MAX_RETRIES,
-                        err,
-                    )
+            except Exception as err:
+                _LOGGER.error(
+                    "Error setting mode for device %s (attempt %d/%d): %s",
+                    self.device_mac,
+                    attempt + 1,
+                    MAX_RETRIES,
+                    err,
+                )
 
-                # Wait before retry (except on last attempt)
-                if attempt < MAX_RETRIES:
-                    await asyncio.sleep(RETRY_DELAY)
-        finally:
-            await self._refresh_mode_data()
+            # Wait before retry (except on last attempt)
+            if attempt < MAX_RETRIES - 1:
+                await asyncio.sleep(RETRY_DELAY)
 
-        if success:
-            return
-
-        _LOGGER.error(
-            "Failed to set operating mode to %s for device %s after %d attempts",
-            option,
-            self.device_mac,
-            MAX_RETRIES,
-        )
-        message = (
-            f"Failed to set operating mode to {option} for device {self.device_mac}"
-        )
-        if last_error:
-            message = f"{message}: {last_error}"
-        raise HomeAssistantError(message)
+        _LOGGER.error("Failed to set operating mode for device %s after %d attempts", self.device_mac, MAX_RETRIES)
 
     async def _refresh_mode_data(self) -> None:
         """Force a refresh on the device and aggregate coordinators."""
@@ -356,13 +346,36 @@ class MarstekMultiDeviceOperatingModeSelect(CoordinatorEntity, SelectEntity):
                 },
             }
         elif mode == MODE_PASSIVE:
-            # Default passive mode config (no power limit, 5 min countdown)
-            # Users can customize via service calls in the future
+            # Get the current passive mode power from the number entity
+            # Use relative reference: derive from this entity's unique_id
+            target_power = 0  # Default to 0 if entity not found
+            
+            # This select entity has unique_id like "AA:BB:CC:DD:EE:FF_operating_mode_select"
+            # The number entity has unique_id like "AA:BB:CC:DD:EE:FF_target_grid_power"
+            # Extract the device prefix and construct the number entity's unique_id
+            if self.unique_id and "_operating_mode_select" in self.unique_id:
+                device_prefix = self.unique_id.replace("_operating_mode_select", "")
+                number_unique_id = f"{device_prefix}_target_grid_power"
+                
+                entity_reg = er.async_get(self.hass)
+                entity_id = entity_reg.async_get_entity_id("number", DOMAIN, number_unique_id)
+                
+                if entity_id:
+                    state = self.hass.states.get(entity_id)
+                    if state and state.state not in ('unknown', 'unavailable'):
+                        try:
+                            target_power = int(float(state.state))
+                        except (ValueError, TypeError):
+                            target_power = 0
+            
+            # Ensure integer value
+            target_power = int(target_power)
+            
             return {
                 "mode": MODE_PASSIVE,
                 "passive_cfg": {
-                    "power": 0,
-                    "cd_time": 300,
+                    "power": target_power,
+                    "cd_time": int(HA_CONTROL_COUNTDOWN),  # 2 hour countdown
                 },
             }
 

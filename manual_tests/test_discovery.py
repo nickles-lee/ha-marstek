@@ -455,7 +455,7 @@ async def discover_and_test():
             passive_config = {
                 "mode": "Passive",
                 "passive_cfg": {
-                    "power": 100,
+                    "power": -100,  # Negative for charge
                     "cd_time": 300,  # 5 minutes
                 },
             }
@@ -463,7 +463,7 @@ async def discover_and_test():
             try:
                 success = await api.set_es_mode(passive_config)
                 if success:
-                    print(f"  ✅ Successfully set Passive mode (100W, 300s)")
+                    print(f"  ✅ Successfully set Passive mode (-100W charge, 300s)")
                     
                     # Verify with retries for UDP reliability
                     if await verify_mode_with_retries(api, "Passive"):

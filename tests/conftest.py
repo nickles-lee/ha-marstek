@@ -57,13 +57,26 @@ def mock_api():
         "total_grid_input_energy": 8000,
         "total_load_energy": 12000,
     })
-    api.get_es_mode = AsyncMock(return_value={
-        "mode": "Auto",
-        "ongrid_power": 100,
-        "offgrid_power": 0,
-        "bat_soc": 80,
-    })
-    api.set_es_mode = AsyncMock(return_value=True)
+    # Track current mode for verification
+    current_mode = {"mode": "Auto"}
+    
+    async def get_es_mode():
+        """Return current mode."""
+        return {
+            "mode": current_mode["mode"],
+            "ongrid_power": 100,
+            "offgrid_power": 0,
+            "bat_soc": 80,
+        }
+    
+    async def set_es_mode(config):
+        """Set mode and update current_mode."""
+        if isinstance(config, dict) and "mode" in config:
+            current_mode["mode"] = config["mode"]
+        return True
+    
+    api.get_es_mode = AsyncMock(side_effect=get_es_mode)
+    api.set_es_mode = AsyncMock(side_effect=set_es_mode)
     api.get_em_status = AsyncMock(return_value={
         "ct_state": 1,
         "a_power": 100,
@@ -120,7 +133,7 @@ def mock_hass():
     hass.data = {DOMAIN: {}}
     hass.services = Mock()
     hass.services.has_service = Mock(return_value=False)
-    hass.services.async_register = AsyncMock()
+    hass.services.async_register = Mock()  # async_register is actually synchronous in HA
     hass.services.async_remove = Mock()
     hass.states = Mock()
     hass.states.get = Mock(return_value=None)

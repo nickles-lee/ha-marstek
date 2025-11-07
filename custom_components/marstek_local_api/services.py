@@ -201,11 +201,17 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         if not coordinator:
             raise HomeAssistantError(f"Could not find coordinator for device {device_id}")
         
+        # Ensure 'power' field in schedule is an integer
+        if "power" in schedule:
+            schedule["power"] = int(schedule["power"])
+        
         # Build ES.SetMode config
         config = {
             "mode": MODE_MANUAL,
             "manual_cfg": schedule,
         }
+        
+        _LOGGER.warning("📤 Setting manual schedule via service for device %s with config: %s", mac, config)
         
         # Use verification to ensure command succeeded despite UDP reliability issues
         success = await _async_set_mode_with_verification(
@@ -216,7 +222,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 f"Failed to set manual schedule for device {mac} after verification retries"
             )
         
-        _LOGGER.info("Successfully set manual schedule for device %s", mac)
+        _LOGGER.info("✓ Successfully set manual schedule for device %s", mac)
         await coordinator.async_request_refresh()
     
     async def _async_set_system_schedule(call: ServiceCall) -> None:
@@ -231,11 +237,17 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         if not isinstance(coordinator, MarstekMultiDeviceCoordinator):
             raise HomeAssistantError("Config entry is not a multi-device system")
         
+        # Ensure 'power' field in schedule is an integer
+        if "power" in schedule:
+            schedule["power"] = int(schedule["power"])
+        
         # Build ES.SetMode config
         config = {
             "mode": MODE_MANUAL,
             "manual_cfg": schedule,
         }
+        
+        _LOGGER.warning("📤 Setting system schedule via service with config: %s", config)
         
         failed_devices = []
         for mac, device_coordinator in coordinator.device_coordinators.items():
@@ -267,14 +279,16 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         if not coordinator:
             raise HomeAssistantError(f"Could not find coordinator for device {device_id}")
         
-        # Build ES.SetMode config for Passive mode
+        # Build ES.SetMode config for Passive mode (ensure integers)
         config = {
             "mode": MODE_PASSIVE,
             "passive_cfg": {
-                "power": power,
-                "cd_time": countdown,
+                "power": int(power),
+                "cd_time": int(countdown),
             },
         }
+        
+        _LOGGER.warning("📤 Setting passive mode via service for device %s with config: %s", mac, config)
         
         # Use verification to ensure command succeeded despite UDP reliability issues
         success = await _async_set_mode_with_verification(
@@ -285,7 +299,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 f"Failed to set passive mode for device {mac} after verification retries"
             )
         
-        _LOGGER.info("Successfully set passive mode for device %s (power=%dW, countdown=%ds)", mac, power, countdown)
+        _LOGGER.info("✓ Successfully set passive mode for device %s (power=%dW, countdown=%ds)", mac, int(power), int(countdown))
         await coordinator.async_request_refresh()
 
     hass.services.async_register(

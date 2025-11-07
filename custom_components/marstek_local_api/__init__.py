@@ -89,12 +89,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DATA_COORDINATOR: coordinator,
     }
     
-    # Start HA-Controlled mode coordinator if enabled
-    if entry.options.get("ha_controlled_mode", False):
-        ha_control = MarstekHAControlCoordinator(hass, entry.entry_id, coordinator)
-        entry_data["ha_control"] = ha_control
-        await ha_control.async_start()
-        _LOGGER.info("Started HA-Controlled mode for entry %s", entry.entry_id)
+    # Start HA Battery control coordinator (always available)
+    ha_control = MarstekHAControlCoordinator(hass, entry.entry_id, coordinator)
+    entry_data["ha_control"] = ha_control
+    await ha_control.async_start()
+    _LOGGER.info("Started HA Battery control for entry %s", entry.entry_id)
     
     hass.data[DOMAIN][entry.entry_id] = entry_data
 
@@ -123,10 +122,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok:
         entry_data = hass.data[DOMAIN][entry.entry_id]
         
-        # Stop HA-Controlled mode coordinator if running
+        # Stop HA Battery control coordinator if running
         if "ha_control" in entry_data:
             await entry_data["ha_control"].async_stop()
-            _LOGGER.info("Stopped HA-Controlled mode for entry %s", entry.entry_id)
+            _LOGGER.info("Stopped HA Battery control for entry %s", entry.entry_id)
         
         # Disconnect API(s)
         coordinator = entry_data[DATA_COORDINATOR]

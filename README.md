@@ -123,7 +123,7 @@ Every sensor listed above also exists in an aggregated form under the **Marstek 
 - `time_num`: Slot index 0-9 (Venus C/E supports 10 time slots)
 - `start_time`, `end_time`: Time in "HH:MM" format
 - `week_set`: 7-bit mask for days of week (1=Mon, 2=Tue, 4=Wed, 8=Thu, 16=Fri, 32=Sat, 64=Sun, 127=all days)
-- `power`: Target power in watts (positive=charge, negative=discharge)
+- `power`: Target power in watts (positive=discharge, negative=charge)
 - `enable`: 1=active, 0=inactive
 
 ### Passive Mode Control
@@ -137,7 +137,7 @@ Every sensor listed above also exists in an aggregated form under the **Marstek 
 service: marstek_local_api.set_passive_mode
 data:
   device_id: abcd1234efgh5678ijkl9012mnop3456
-  power: 500
+  power: -500  # Negative for charge
   countdown: 7200
 ```
 
@@ -181,7 +181,7 @@ These features will be added if/when Marstek extends the Local API to support th
 
 1. Enable "HA-Controlled Mode" in the integration's options
 2. A "Target Grid Power" number entity appears for each device
-3. Set the target wattage (negative=discharge, positive=charge)
+3. Set the target wattage (positive=discharge, negative=charge)
 4. The integration automatically maintains this power level by:
    - Sending Passive mode commands **every 2 minutes**
    - Setting a **2-hour countdown** on each command
@@ -210,7 +210,7 @@ automation:
         target:
           entity_id: number.marstek_venuse_target_grid_power
         data:
-          value: 2000  # Charge at 2000W
+          value: -2000  # Charge at 2000W (negative)
 
   - alias: "Battery: Discharge during peak"
     trigger:
@@ -221,7 +221,7 @@ automation:
         target:
           entity_id: number.marstek_venuse_target_grid_power
         data:
-          value: -1500  # Discharge at 1500W
+          value: 1500  # Discharge at 1500W (positive)
 
   - alias: "Battery: Idle during normal hours"
     trigger:
@@ -255,7 +255,7 @@ automation:
 - **Not an official mode:** HA-Controlled is a Home Assistant construct using the undocumented Passive mode
 - **Uses Passive mode internally:** You'll see "Passive" in the operating mode sensor while HA-Controlled is active
 - **Manual override:** If you manually change the mode (via the mode select), HA control automatically pauses
-- **Power range:** -2500W (discharge) to +2500W (charge) - may vary by device model
+- **Power range:** -2500W (charge) to +2500W (discharge) - may vary by device model
 - **Update frequency:** Commands sent every 2 minutes to ensure that the passive mode setting matches what HA expects
 - **Long countdown:** 2-hour countdown ensures battery follows HA setting even if connection is temporarily lost
 - **Ideal use case:** Dynamic automations responding to pricing, solar, or load conditions

@@ -194,3 +194,5 @@ async def test_set_mode_with_verification_custom_retries(mock_coordinator):
     assert mock_coordinator.api.get_es_mode.call_count == 2
 
 
+
+
