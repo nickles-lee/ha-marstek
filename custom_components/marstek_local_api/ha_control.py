@@ -6,7 +6,7 @@ battery charge/discharge power.
 
 How it works:
 - Monitors the "Target Grid Power" number entity for user/automation changes
-- Every 2 minutes, sends a Passive mode command with:
+- Periodically (using UPDATE_INTERVAL_MEDIUM), sends a Passive mode command with:
   * Current target power from the number entity
   * 2-hour countdown timer
 - The long countdown ensures the battery effectively always follows HA's target power
@@ -22,18 +22,17 @@ from datetime import timedelta
 import logging
 from typing import Any
 
-from homeassistant.core import HomeAssistant, callback, Event
+from homeassistant.core import HomeAssistant, Event
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.helpers import entity_registry as er
 
 from .const import (
+    DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     HA_CONTROL_COUNTDOWN,
-    HA_CONTROL_UPDATE_INTERVAL,
     MODE_PASSIVE,
-    MODE_VERIFY_DELAY,
     MODE_VERIFY_RETRY_DELAY,
+    UPDATE_INTERVAL_MEDIUM,
 )
 from .coordinator import MarstekDataUpdateCoordinator, MarstekMultiDeviceCoordinator
 
@@ -44,7 +43,7 @@ class MarstekHAControlCoordinator:
     """Coordinator for HA-Controlled mode automation.
     
     This coordinator monitors the "Target Grid Power" number entities and
-    periodically (every 2 minutes) pushes Passive mode commands to maintain control.
+    periodically (using UPDATE_INTERVAL_MEDIUM) pushes Passive mode commands to maintain control.
     The long countdown (2 hours) ensures the battery effectively always follows HA's
     target power, even if HA temporarily loses connection to the device.
     """
@@ -69,13 +68,14 @@ class MarstekHAControlCoordinator:
         _LOGGER.warning("🚀 Starting HA Battery control coordinator for entry %s (multi-device: %s)", 
                        self.entry_id, self._is_multi_device)
         
-        # Set up periodic updates (every 2 minutes as backup)
+        # Set up periodic updates using UPDATE_INTERVAL_MEDIUM (as backup to immediate state changes)
+        update_interval = UPDATE_INTERVAL_MEDIUM * DEFAULT_SCAN_INTERVAL
         self._remove_interval = async_track_time_interval(
             self.hass,
             self._async_update_passive_mode,
-            timedelta(seconds=HA_CONTROL_UPDATE_INTERVAL),
+            timedelta(seconds=update_interval),
         )
-        _LOGGER.warning("📅 Periodic battery control update interval set to %d seconds", HA_CONTROL_UPDATE_INTERVAL)
+        _LOGGER.warning("📅 Periodic battery control update interval set to %d seconds (UPDATE_INTERVAL_MEDIUM)", update_interval)
         
         # Set up state change listeners for immediate updates
         self._setup_state_listeners()
@@ -237,7 +237,7 @@ class MarstekHAControlCoordinator:
             # Use verification with fewer retries for background task
             success = await _async_set_mode_with_verification(
                 self.coordinator, config, MODE_PASSIVE,
-                max_retries=2,  # Fewer retries since we run every 2 minutes
+                max_retries=2,  # Fewer retries since we run periodically (UPDATE_INTERVAL_MEDIUM)
                 verify_delay=1.5,  # Slightly faster for frequent updates
                 retry_delay=MODE_VERIFY_RETRY_DELAY,
             )
@@ -251,7 +251,7 @@ class MarstekHAControlCoordinator:
                 _LOGGER.warning(
                     "Failed to verify HA-Controlled mode update, will retry next cycle"
                 )
-                # Don't raise error - will retry on next interval (2 minutes)
+                # Don't raise error - will retry on next interval (UPDATE_INTERVAL_MEDIUM)
         except Exception as err:
             _LOGGER.error("Error updating HA Battery control: %s", err)
 
@@ -315,7 +315,7 @@ class MarstekHAControlCoordinator:
                 # Use verification with fewer retries for background task
                 success = await _async_set_mode_with_verification(
                     device_coordinator, config, MODE_PASSIVE,
-                    max_retries=2,  # Fewer retries since we run every 2 minutes
+                    max_retries=2,  # Fewer retries since we run periodically (UPDATE_INTERVAL_MEDIUM)
                     verify_delay=1.5,  # Slightly faster for frequent updates
                     retry_delay=MODE_VERIFY_RETRY_DELAY,
                 )
@@ -329,7 +329,7 @@ class MarstekHAControlCoordinator:
                     _LOGGER.warning(
                         "Failed to verify HA-Controlled mode update for device %s, will retry next cycle", mac
                     )
-                    # Don't raise error - will retry on next interval (2 minutes)
+                    # Don't raise error - will retry on next interval (UPDATE_INTERVAL_MEDIUM)
             except Exception as err:
                 _LOGGER.error("Error updating HA Battery control for device %s: %s", mac, err)
 

@@ -164,15 +164,40 @@ async def test_get_coordinator_from_device_id_not_found(mock_hass, mock_device_r
         _get_coordinator_from_device_id(mock_hass, "test_device_id")
 
 
-async def test_set_system_schedule_service(mock_hass, mock_coordinator):
+async def test_set_system_schedule_service(mock_hass, mock_coordinator, mock_api):
     """Test set_system_schedule service for multi-device setup."""
     from custom_components.marstek_local_api.coordinator import MarstekMultiDeviceCoordinator
+    
+    # Create a second mock API with mode tracking
+    second_api = AsyncMock()
+    second_current_mode = {"mode": "Auto"}
+    
+    async def second_get_es_mode():
+        return {
+            "mode": second_current_mode["mode"],
+            "ongrid_power": 100,
+            "offgrid_power": 0,
+            "bat_soc": 80,
+        }
+    
+    async def second_set_es_mode(config):
+        if isinstance(config, dict) and "mode" in config:
+            second_current_mode["mode"] = config["mode"]
+        return True
+    
+    second_api.get_es_mode = AsyncMock(side_effect=second_get_es_mode)
+    second_api.set_es_mode = AsyncMock(side_effect=second_set_es_mode)
+    
+    # Create a second coordinator
+    second_coordinator = Mock()
+    second_coordinator.api = second_api
+    second_coordinator.async_request_refresh = AsyncMock()
     
     # Create a mock multi-device coordinator
     multi_coordinator = Mock(spec=MarstekMultiDeviceCoordinator)
     multi_coordinator.device_coordinators = {
         "112233445566": mock_coordinator,
-        "AABBCCDDEEFF": Mock(api=Mock(set_es_mode=AsyncMock(return_value=True))),
+        "AABBCCDDEEFF": second_coordinator,
     }
     multi_coordinator.async_request_refresh = AsyncMock()
     
@@ -215,7 +240,7 @@ async def test_set_system_schedule_service(mock_hass, mock_coordinator):
         "manual_cfg": service_call.data["schedule"],
     }
     mock_coordinator.api.set_es_mode.assert_called_once_with(expected_config)
-    multi_coordinator.device_coordinators["AABBCCDDEEFF"].api.set_es_mode.assert_called_once_with(expected_config)
+    second_coordinator.api.set_es_mode.assert_called_once_with(expected_config)
     multi_coordinator.async_request_refresh.assert_called_once()
 
 
