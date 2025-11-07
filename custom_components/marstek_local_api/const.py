@@ -89,13 +89,28 @@ DATA_COORDINATOR: Final = "coordinator"
 DATA_DEVICE_INFO: Final = "device_info"
 
 # Platforms
-PLATFORMS: Final = ["sensor", "binary_sensor", "select", "number"]
+PLATFORMS: Final = ["sensor", "binary_sensor", "select", "number", "button"]
 
 # Services
 SERVICE_REQUEST_SYNC: Final = "request_data_sync"
 SERVICE_SET_MANUAL_SCHEDULE: Final = "set_manual_schedule"
 SERVICE_SET_SYSTEM_SCHEDULE: Final = "set_system_schedule"
+SERVICE_SET_MANUAL_SCHEDULES: Final = "set_manual_schedules"
+SERVICE_CLEAR_MANUAL_SCHEDULES: Final = "clear_manual_schedules"
 SERVICE_SET_PASSIVE_MODE: Final = "set_passive_mode"
+
+# Schedule configuration
+WEEKDAY_MAP: Final = {
+    "mon": 1,   # 0000001
+    "tue": 2,   # 0000010
+    "wed": 4,   # 0000100
+    "thu": 8,   # 0001000
+    "fri": 16,  # 0010000
+    "sat": 32,  # 0100000
+    "sun": 64,  # 1000000
+}
+WEEKDAYS_ALL: Final = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+MAX_SCHEDULE_SLOTS: Final = 10  # Venus C/E supports slots 0-9
 
 # HA-Controlled mode settings
 # Update every 2 minutes to maintain tight control over battery behavior

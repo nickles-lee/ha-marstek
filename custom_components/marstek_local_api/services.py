@@ -3,26 +3,31 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from datetime import time
 
 import voluptuous as vol
 
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import config_validation as cv, device_registry as dr
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import device_registry as dr
 
 from .const import (
     DATA_COORDINATOR,
     DOMAIN,
+    MAX_SCHEDULE_SLOTS,
     MODE_MANUAL,
     MODE_PASSIVE,
     MODE_VERIFY_DELAY,
     MODE_VERIFY_MAX_RETRIES,
     MODE_VERIFY_RETRY_DELAY,
+    SERVICE_CLEAR_MANUAL_SCHEDULES,
     SERVICE_REQUEST_SYNC,
     SERVICE_SET_MANUAL_SCHEDULE,
+    SERVICE_SET_MANUAL_SCHEDULES,
     SERVICE_SET_PASSIVE_MODE,
     SERVICE_SET_SYSTEM_SCHEDULE,
+    WEEKDAY_MAP,
 )
 from .coordinator import MarstekDataUpdateCoordinator, MarstekMultiDeviceCoordinator
 
@@ -31,10 +36,57 @@ _LOGGER = logging.getLogger(__name__)
 SERVICE_REQUEST_SYNC_SCHEMA = vol.Schema(
     {
         vol.Optional("entry_id"): cv.string,
+        vol.Optional("device_id"): cv.string,
     }
 )
 
-# Manual schedule schema for validation
+# Schedule service schemas
+def _days_to_week_set(days: list[str]) -> int:
+    """Convert list of day names to week_set bitmap."""
+    return sum(WEEKDAY_MAP[day] for day in days)
+
+
+SERVICE_SET_MANUAL_SCHEDULE_SCHEMA = vol.Schema(
+    {
+        vol.Required("device_id"): cv.string,
+        vol.Required("time_num"): vol.All(vol.Coerce(int), vol.Range(min=0, max=MAX_SCHEDULE_SLOTS - 1)),
+        vol.Required("start_time"): cv.time,
+        vol.Required("end_time"): cv.time,
+        vol.Optional("days", default=list(WEEKDAY_MAP.keys())): vol.All(
+            cv.ensure_list, [vol.In(WEEKDAY_MAP.keys())]
+        ),
+        vol.Optional("power", default=0): vol.Coerce(int),  # Negative=charge, positive=discharge, 0=no limit
+        vol.Optional("enabled", default=True): cv.boolean,
+    }
+)
+
+SERVICE_SET_MANUAL_SCHEDULES_SCHEMA = vol.Schema(
+    {
+        vol.Required("device_id"): cv.string,
+        vol.Required("schedules"): [
+            vol.Schema(
+                {
+                    vol.Required("time_num"): vol.All(vol.Coerce(int), vol.Range(min=0, max=MAX_SCHEDULE_SLOTS - 1)),
+                    vol.Required("start_time"): cv.time,
+                    vol.Required("end_time"): cv.time,
+                    vol.Optional("days", default=list(WEEKDAY_MAP.keys())): vol.All(
+                        cv.ensure_list, [vol.In(WEEKDAY_MAP.keys())]
+                    ),
+                    vol.Optional("power", default=0): vol.Coerce(int),  # Negative=charge, positive=discharge, 0=no limit
+                    vol.Optional("enabled", default=True): cv.boolean,
+                }
+            )
+        ],
+    }
+)
+
+SERVICE_CLEAR_MANUAL_SCHEDULES_SCHEMA = vol.Schema(
+    {
+        vol.Required("device_id"): cv.string,
+    }
+)
+
+# Manual schedule schema for validation (legacy format support for SET_SYSTEM_SCHEDULE)
 MANUAL_SCHEDULE_SCHEMA = vol.Schema(
     {
         vol.Required("time_num"): vol.All(int, vol.Range(min=0, max=9)),
@@ -43,13 +95,6 @@ MANUAL_SCHEDULE_SCHEMA = vol.Schema(
         vol.Required("week_set"): vol.All(int, vol.Range(min=0, max=127)),
         vol.Required("power"): int,
         vol.Required("enable"): vol.In([0, 1]),
-    }
-)
-
-SERVICE_SET_MANUAL_SCHEDULE_SCHEMA = vol.Schema(
-    {
-        vol.Required("device_id"): cv.string,
-        vol.Required("schedule"): MANUAL_SCHEDULE_SCHEMA,
     }
 )
 
@@ -63,14 +108,14 @@ SERVICE_SET_SYSTEM_SCHEDULE_SCHEMA = vol.Schema(
 SERVICE_SET_PASSIVE_MODE_SCHEMA = vol.Schema(
     {
         vol.Required("device_id"): cv.string,
-        vol.Required("power"): int,
-        vol.Required("countdown"): vol.All(int, vol.Range(min=0)),
+        vol.Required("power"): vol.All(vol.Coerce(int), vol.Range(min=-10000, max=10000)),
+        vol.Required("duration"): vol.All(vol.Coerce(int), vol.Range(min=1, max=86400)),
     }
 )
 
 
 def _get_coordinator_from_device_id(hass: HomeAssistant, device_id: str) -> tuple[MarstekDataUpdateCoordinator | None, str | None]:
-    """Get coordinator and MAC address from device_id."""
+    """Get coordinator and MAC address from device_id (legacy helper for system schedule)."""
     device_registry = dr.async_get(hass)
     device_entry = device_registry.async_get(device_id)
     
@@ -102,6 +147,117 @@ def _get_coordinator_from_device_id(hass: HomeAssistant, device_id: str) -> tupl
                     return coordinator, mac
     
     raise HomeAssistantError(f"No coordinator found for device {device_id}")
+
+
+def _resolve_device_context(
+    hass: HomeAssistant,
+    device_id: str,
+) -> tuple[MarstekDataUpdateCoordinator, MarstekMultiDeviceCoordinator | None, str | None]:
+    """Resolve the per-device coordinator (and aggregate coordinator if any) for a Home Assistant device."""
+    domain_data = hass.data.get(DOMAIN)
+    if not domain_data:
+        raise HomeAssistantError("Integration has no active entries")
+
+    device_registry = dr.async_get(hass)
+    device_entry = device_registry.async_get(device_id)
+    if not device_entry:
+        raise HomeAssistantError(f"Unknown device_id: {device_id}")
+
+    if not device_entry.config_entries:
+        raise HomeAssistantError(
+            f"Device {device_id} is not associated with any Marstek config entry"
+        )
+
+    for entry_id in device_entry.config_entries:
+        entry_payload = domain_data.get(entry_id)
+        if not entry_payload:
+            continue
+
+        coordinator = entry_payload.get(DATA_COORDINATOR)
+        if coordinator is None:
+            continue
+
+        if isinstance(coordinator, MarstekDataUpdateCoordinator):
+            return coordinator, None, None
+
+        device_identifier: str | None = None
+        for domain, identifier in device_entry.identifiers:
+            if domain == DOMAIN:
+                device_identifier = identifier
+                break
+
+        if not device_identifier:
+            raise HomeAssistantError(
+                f"Device {device_id} lacks Marstek identifiers"
+            )
+
+        if device_identifier.startswith("system_"):
+            raise HomeAssistantError(
+                f"Device {device_id} targets the aggregate system; please choose a specific battery device"
+            )
+
+        device_coordinator = coordinator.device_coordinators.get(device_identifier)
+        if device_coordinator is None:
+            # Fallback to case-insensitive comparison
+            for mac, candidate in coordinator.device_coordinators.items():
+                if mac.lower() == device_identifier.lower():
+                    device_coordinator = candidate
+                    device_identifier = mac
+                    break
+
+        if device_coordinator is None:
+            raise HomeAssistantError(
+                f"Could not find device coordinator for device {device_id}"
+            )
+
+        return device_coordinator, coordinator, device_identifier
+
+    raise HomeAssistantError(
+        f"Device {device_id} is not part of an active Marstek config entry"
+    )
+
+
+async def _refresh_after_write(
+    device_coordinator: MarstekDataUpdateCoordinator,
+    aggregate_coordinator: MarstekMultiDeviceCoordinator | None,
+) -> None:
+    """Refresh device/aggregate coordinators after a state-changing operation."""
+    try:
+        await device_coordinator.async_request_refresh()
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning("Failed to refresh device coordinator after write: %s", err)
+
+    if aggregate_coordinator:
+        try:
+            await aggregate_coordinator.async_request_refresh()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Failed to refresh aggregate coordinator after write: %s", err)
+
+
+def _apply_local_mode_state(
+    device_coordinator: MarstekDataUpdateCoordinator,
+    aggregate_coordinator: MarstekMultiDeviceCoordinator | None,
+    device_identifier: str | None,
+    mode: str,
+    mode_payload: dict | None = None,
+) -> None:
+    """Update cached coordinator data so operating mode sensors reflect changes immediately."""
+    device_data = dict(device_coordinator.data or {})
+    mode_state: dict[str, object] = {"mode": mode}
+    if mode_payload:
+        mode_state.update(mode_payload)
+
+    current_mode = dict(device_data.get("mode") or {})
+    current_mode.update(mode_state)
+    device_data["mode"] = current_mode
+    device_coordinator.async_set_updated_data(device_data)
+
+    if aggregate_coordinator and device_identifier:
+        aggregate_data = dict(aggregate_coordinator.data or {})
+        devices = dict(aggregate_data.get("devices") or {})
+        devices[device_identifier] = device_data
+        aggregate_data["devices"] = devices
+        aggregate_coordinator.async_set_updated_data(aggregate_data)
 
 
 async def _async_set_mode_with_verification(
@@ -172,10 +328,36 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     async def _async_request_sync(call: ServiceCall) -> None:
         """Trigger an on-demand refresh across configured coordinators."""
         entry_id: str | None = call.data.get("entry_id")
+        device_id: str | None = call.data.get("device_id")
         domain_data = hass.data.get(DOMAIN)
 
         if not domain_data:
             _LOGGER.debug("Request sync skipped - integration has no active entries")
+            return
+
+        if device_id:
+            device_registry = dr.async_get(hass)
+            device_entry = device_registry.async_get(device_id)
+            if not device_entry:
+                raise HomeAssistantError(f"Unknown device_id: {device_id}")
+
+            if not device_entry.config_entries:
+                raise HomeAssistantError(
+                    f"Device {device_id} is not associated with any Marstek config entry"
+                )
+
+            refreshed = False
+            for candidate_entry_id in device_entry.config_entries:
+                entry_payload = domain_data.get(candidate_entry_id)
+                if not entry_payload:
+                    continue
+                await _async_refresh_entry(candidate_entry_id, entry_payload)
+                refreshed = True
+
+            if not refreshed:
+                raise HomeAssistantError(
+                    f"Device {device_id} is not part of an active Marstek config entry"
+                )
             return
 
         if entry_id:
@@ -193,38 +375,198 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             await _async_refresh_entry(current_entry_id, entry_payload)
 
     async def _async_set_manual_schedule(call: ServiceCall) -> None:
-        """Set Manual mode schedule for a device."""
+        """Set a single manual mode schedule."""
         device_id = call.data["device_id"]
-        schedule = call.data["schedule"]
-        
-        coordinator, mac = _get_coordinator_from_device_id(hass, device_id)
-        if not coordinator:
-            raise HomeAssistantError(f"Could not find coordinator for device {device_id}")
-        
-        # Ensure 'power' field in schedule is an integer
-        if "power" in schedule:
-            schedule["power"] = int(schedule["power"])
-        
-        # Build ES.SetMode config
+        time_num = call.data["time_num"]
+        start_time: time = call.data["start_time"]
+        end_time: time = call.data["end_time"]
+        days = call.data["days"]
+        power = call.data["power"]
+        enabled = call.data["enabled"]
+
+        device_coordinator, aggregate_coordinator, device_identifier = _resolve_device_context(
+            hass,
+            device_id,
+        )
+        target_label = device_identifier or device_id
+
+        # Build manual_cfg
+        manual_cfg = {
+            "time_num": time_num,
+            "start_time": start_time.strftime("%H:%M"),
+            "end_time": end_time.strftime("%H:%M"),
+            "week_set": _days_to_week_set(days),
+            "power": power,
+            "enable": 1 if enabled else 0,
+        }
+
         config = {
             "mode": MODE_MANUAL,
-            "manual_cfg": schedule,
+            "manual_cfg": manual_cfg,
         }
-        
-        _LOGGER.warning("📤 Setting manual schedule via service for device %s with config: %s", mac, config)
-        
-        # Use verification to ensure command succeeded despite UDP reliability issues
-        success = await _async_set_mode_with_verification(
-            coordinator, config, MODE_MANUAL
+
+        # Set mode via API
+        try:
+            success = await device_coordinator.api.set_es_mode(config)
+            if success:
+                _LOGGER.info(
+                    "Successfully set manual schedule %d for %s",
+                    time_num,
+                    target_label,
+                )
+                _apply_local_mode_state(
+                    device_coordinator,
+                    aggregate_coordinator,
+                    device_identifier,
+                    MODE_MANUAL,
+                    {"manual_cfg": manual_cfg},
+                )
+                hass.async_create_task(
+                    _refresh_after_write(device_coordinator, aggregate_coordinator)
+                )
+            else:
+                raise HomeAssistantError(
+                    f"Device rejected schedule configuration for slot {time_num}"
+                )
+        except Exception as err:
+            _LOGGER.error("Error setting manual schedule: %s", err)
+            raise HomeAssistantError(f"Failed to set manual schedule: {err}") from err
+
+    async def _async_set_manual_schedules(call: ServiceCall) -> None:
+        """Set multiple manual mode schedules at once."""
+        device_id = call.data["device_id"]
+        schedules = call.data["schedules"]
+
+        device_coordinator, aggregate_coordinator, device_identifier = _resolve_device_context(
+            hass,
+            device_id,
         )
-        if not success:
-            raise HomeAssistantError(
-                f"Failed to set manual schedule for device {mac} after verification retries"
+        target_label = device_identifier or device_id
+
+        _LOGGER.info("Setting %d manual schedules for %s", len(schedules), target_label)
+
+        failed_slots = []
+        any_success = False
+
+        # Set each schedule sequentially
+        for schedule in schedules:
+            time_num = schedule["time_num"]
+            start_time: time = schedule["start_time"]
+            end_time: time = schedule["end_time"]
+            days = schedule["days"]
+            power = schedule["power"]
+            enabled = schedule["enabled"]
+
+            manual_cfg = {
+                "time_num": time_num,
+                "start_time": start_time.strftime("%H:%M"),
+                "end_time": end_time.strftime("%H:%M"),
+                "week_set": _days_to_week_set(days),
+                "power": power,
+                "enable": 1 if enabled else 0,
+            }
+
+            config = {
+                "mode": MODE_MANUAL,
+                "manual_cfg": manual_cfg,
+            }
+
+            try:
+                success = await device_coordinator.api.set_es_mode(config)
+                if success:
+                    _LOGGER.debug("Successfully set schedule slot %d", time_num)
+                    any_success = True
+                else:
+                    _LOGGER.warning("Device rejected schedule slot %d", time_num)
+                    failed_slots.append(time_num)
+            except Exception as err:
+                _LOGGER.error("Error setting schedule slot %d: %s", time_num, err)
+                failed_slots.append(time_num)
+
+            # Small delay between calls for reliability
+            await asyncio.sleep(0.5)
+
+        # Refresh coordinator after all schedules are set
+        if any_success:
+            _apply_local_mode_state(
+                device_coordinator,
+                aggregate_coordinator,
+                device_identifier,
+                MODE_MANUAL,
             )
-        
-        _LOGGER.info("✓ Successfully set manual schedule for device %s", mac)
-        await coordinator.async_request_refresh()
-    
+        hass.async_create_task(
+            _refresh_after_write(device_coordinator, aggregate_coordinator)
+        )
+
+        if failed_slots:
+            raise HomeAssistantError(
+                f"Failed to set schedules for slots: {failed_slots}"
+            )
+
+        _LOGGER.info("Successfully set all %d schedules", len(schedules))
+
+    async def _async_clear_manual_schedules(call: ServiceCall) -> None:
+        """Clear all manual schedules by disabling all slots."""
+        device_id = call.data["device_id"]
+
+        device_coordinator, aggregate_coordinator, device_identifier = _resolve_device_context(
+            hass,
+            device_id,
+        )
+        target_label = device_identifier or device_id
+
+        _LOGGER.info("Clearing all manual schedules for %s", target_label)
+
+        failed_slots = []
+        any_success = False
+
+        # Disable all 10 schedule slots
+        for i in range(MAX_SCHEDULE_SLOTS):
+            config = {
+                "mode": MODE_MANUAL,
+                "manual_cfg": {
+                    "time_num": i,
+                    "start_time": "00:00",
+                    "end_time": "00:00",
+                    "week_set": 0,  # No days
+                    "power": 0,
+                    "enable": 0,  # Disabled
+                },
+            }
+
+            try:
+                success = await device_coordinator.api.set_es_mode(config)
+                if success:
+                    any_success = True
+                else:
+                    _LOGGER.warning("Device rejected clearing schedule slot %d", i)
+                    failed_slots.append(i)
+            except Exception as err:
+                _LOGGER.error("Error clearing schedule slot %d: %s", i, err)
+                failed_slots.append(i)
+
+            # Small delay between calls
+            await asyncio.sleep(0.3)
+
+        # Refresh coordinator
+        if any_success:
+            _apply_local_mode_state(
+                device_coordinator,
+                aggregate_coordinator,
+                device_identifier,
+                MODE_MANUAL,
+            )
+        hass.async_create_task(
+            _refresh_after_write(device_coordinator, aggregate_coordinator)
+        )
+
+        if failed_slots:
+            raise HomeAssistantError(
+                f"Failed to clear schedules for slots: {failed_slots}"
+            )
+
+        _LOGGER.info("Successfully cleared all manual schedules")
+
     async def _async_set_system_schedule(call: ServiceCall) -> None:
         """Set Manual mode schedule for all devices in a system."""
         entry_id = call.data["entry_id"]
@@ -268,39 +610,55 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         
         _LOGGER.info("Successfully set system schedule for %d devices", len(coordinator.device_coordinators))
         await coordinator.async_request_refresh()
-    
+
     async def _async_set_passive_mode(call: ServiceCall) -> None:
-        """Set Passive mode with custom power and countdown."""
+        """Set passive mode with specified power and duration."""
         device_id = call.data["device_id"]
         power = call.data["power"]
-        countdown = call.data["countdown"]
-        
-        coordinator, mac = _get_coordinator_from_device_id(hass, device_id)
-        if not coordinator:
-            raise HomeAssistantError(f"Could not find coordinator for device {device_id}")
-        
-        # Build ES.SetMode config for Passive mode (ensure integers)
+        duration = call.data["duration"]
+
+        device_coordinator, aggregate_coordinator, device_identifier = _resolve_device_context(
+            hass,
+            device_id,
+        )
+        target_label = device_identifier or device_id
+
+        # Build passive mode config
         config = {
             "mode": MODE_PASSIVE,
             "passive_cfg": {
-                "power": int(power),
-                "cd_time": int(countdown),
+                "power": power,
+                "cd_time": duration,
             },
         }
-        
-        _LOGGER.warning("📤 Setting passive mode via service for device %s with config: %s", mac, config)
-        
-        # Use verification to ensure command succeeded despite UDP reliability issues
-        success = await _async_set_mode_with_verification(
-            coordinator, config, MODE_PASSIVE
-        )
-        if not success:
-            raise HomeAssistantError(
-                f"Failed to set passive mode for device {mac} after verification retries"
-            )
-        
-        _LOGGER.info("✓ Successfully set passive mode for device %s (power=%dW, countdown=%ds)", mac, int(power), int(countdown))
-        await coordinator.async_request_refresh()
+
+        # Set mode via API
+        try:
+            success = await device_coordinator.api.set_es_mode(config)
+            if success:
+                _LOGGER.info(
+                    "Successfully set passive mode: power=%dW, duration=%ds for %s",
+                    power,
+                    duration,
+                    target_label,
+                )
+                _apply_local_mode_state(
+                    device_coordinator,
+                    aggregate_coordinator,
+                    device_identifier,
+                    MODE_PASSIVE,
+                    {"passive_cfg": config["passive_cfg"]},
+                )
+                hass.async_create_task(
+                    _refresh_after_write(device_coordinator, aggregate_coordinator)
+                )
+            else:
+                raise HomeAssistantError(
+                    f"Device rejected passive mode configuration (power={power}W, duration={duration}s)"
+                )
+        except Exception as err:
+            _LOGGER.error("Error setting passive mode: %s", err)
+            raise HomeAssistantError(f"Failed to set passive mode: {err}") from err
 
     hass.services.async_register(
         DOMAIN,
@@ -308,21 +666,35 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         _async_request_sync,
         schema=SERVICE_REQUEST_SYNC_SCHEMA,
     )
-    
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_SET_MANUAL_SCHEDULE,
         _async_set_manual_schedule,
         schema=SERVICE_SET_MANUAL_SCHEDULE_SCHEMA,
     )
-    
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SET_MANUAL_SCHEDULES,
+        _async_set_manual_schedules,
+        schema=SERVICE_SET_MANUAL_SCHEDULES_SCHEMA,
+    )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CLEAR_MANUAL_SCHEDULES,
+        _async_clear_manual_schedules,
+        schema=SERVICE_CLEAR_MANUAL_SCHEDULES_SCHEMA,
+    )
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_SET_SYSTEM_SCHEDULE,
         _async_set_system_schedule,
         schema=SERVICE_SET_SYSTEM_SCHEDULE_SCHEMA,
     )
-    
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_SET_PASSIVE_MODE,
@@ -332,6 +704,8 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     _LOGGER.info("Registered service %s.%s", DOMAIN, SERVICE_REQUEST_SYNC)
     _LOGGER.info("Registered service %s.%s", DOMAIN, SERVICE_SET_MANUAL_SCHEDULE)
+    _LOGGER.info("Registered service %s.%s", DOMAIN, SERVICE_SET_MANUAL_SCHEDULES)
+    _LOGGER.info("Registered service %s.%s", DOMAIN, SERVICE_CLEAR_MANUAL_SCHEDULES)
     _LOGGER.info("Registered service %s.%s", DOMAIN, SERVICE_SET_SYSTEM_SCHEDULE)
     _LOGGER.info("Registered service %s.%s", DOMAIN, SERVICE_SET_PASSIVE_MODE)
 
@@ -341,6 +715,8 @@ async def async_unload_services(hass: HomeAssistant) -> None:
     services_to_remove = [
         SERVICE_REQUEST_SYNC,
         SERVICE_SET_MANUAL_SCHEDULE,
+        SERVICE_SET_MANUAL_SCHEDULES,
+        SERVICE_CLEAR_MANUAL_SCHEDULES,
         SERVICE_SET_SYSTEM_SCHEDULE,
         SERVICE_SET_PASSIVE_MODE,
     ]

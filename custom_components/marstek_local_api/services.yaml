@@ -6,26 +6,133 @@ request_data_sync:
       name: Config Entry ID
       description: Optional config entry ID to refresh. When omitted, all entries are refreshed.
       example: "1234567890abcdef1234567890abcdef"
-
-set_manual_schedule:
-  name: Set Manual Schedule
-  description: Configure Manual mode schedule for a Marstek device.
-  fields:
     device_id:
-      name: Device ID
-      description: Target device ID.
-      required: true
-      example: "abcd1234efgh5678ijkl9012mnop3456"
+      name: Battery
+      description: Optional battery to refresh. When omitted, every active battery is refreshed.
       selector:
         device:
           integration: marstek_local_api
-    schedule:
-      name: Schedule Configuration
-      description: Schedule configuration as JSON object.
+
+set_manual_schedule:
+  name: Set Manual Schedule
+  description: Configure a single manual mode time schedule slot for the selected battery.
+  fields:
+    device_id:
+      name: Battery
+      description: "Select the battery whose manual mode schedules you want to configure."
       required: true
-      example: '{"time_num": 0, "start_time": "08:30", "end_time": "20:30", "week_set": 127, "power": 100, "enable": 1}'
+      selector:
+        device:
+          integration: marstek_local_api
+    time_num:
+      name: Schedule Slot
+      description: Schedule slot number (0-9). Each slot is an independent schedule.
+      required: true
+      example: 0
+      selector:
+        number:
+          min: 0
+          max: 9
+          mode: slider
+    start_time:
+      name: Start Time
+      description: When to start this schedule (24-hour format).
+      required: true
+      example: "08:00"
+      selector:
+        time:
+    end_time:
+      name: End Time
+      description: When to end this schedule (24-hour format).
+      required: true
+      example: "16:00"
+      selector:
+        time:
+    days:
+      name: Days of Week
+      description: Which days this schedule applies to.
+      default: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+      example: ["mon", "tue", "wed", "thu", "fri"]
+      selector:
+        select:
+          multiple: true
+          options:
+            - label: Monday
+              value: mon
+            - label: Tuesday
+              value: tue
+            - label: Wednesday
+              value: wed
+            - label: Thursday
+              value: thu
+            - label: Friday
+              value: fri
+            - label: Saturday
+              value: sat
+            - label: Sunday
+              value: sun
+    power:
+      name: Power Limit
+      description: Power limit in watts. Use negative values for charging (e.g., -2000 = 2000W charge limit) and positive values for discharging (e.g., 800 = 800W discharge limit). Use 0 for no limit.
+      default: 0
+      example: -2000
+      selector:
+        number:
+          min: -10000
+          max: 10000
+          step: 100
+          unit_of_measurement: W
+    enabled:
+      name: Enabled
+      description: Whether this schedule is active.
+      default: true
+      selector:
+        boolean:
+
+set_manual_schedules:
+  name: Set Multiple Manual Schedules
+  description: Configure manual mode schedules using YAML for the selected battery.
+  fields:
+    device_id:
+      name: Battery
+      description: "Select the battery whose manual mode schedules you want to configure."
+      required: true
+      selector:
+        device:
+          integration: marstek_local_api
+    schedules:
+      name: Schedules
+      description: List of schedules to configure (YAML list). Each item must include time_num, start_time, end_time, and optionally days, power, and enabled. Power uses negative values for charging and positive values for discharging.
+      required: true
+      example: |
+        # Slot 0 - weekday charge window
+        - time_num: 0
+          start_time: "08:00"
+          end_time: "16:00"
+          days: ["mon", "tue", "wed", "thu", "fri"]
+          power: -2000
+          enabled: true
+        # Slot 1 - weekday discharge window
+        - time_num: 1
+          start_time: "18:00"
+          end_time: "22:00"
+          days: ["mon", "tue", "wed", "thu", "fri"]
+          power: 800
+          enabled: true
       selector:
         object:
+
+clear_manual_schedules:
+  name: Clear Manual Schedules
+  description: Remove all configured manual mode schedules by disabling all 10 schedule slots on the selected battery.
+  fields:
+    device_id:
+      name: Battery
+      description: "Select the battery whose schedules you want to clear."
+      required: true
+      selector:
+        device:
+          integration: marstek_local_api
 
 set_system_schedule:
   name: Set System Schedule
@@ -49,37 +156,34 @@ set_system_schedule:
 
 set_passive_mode:
   name: Set Passive Mode
-  description: Set Passive mode with custom power and countdown for a Marstek device.
+  description: Switch the selected battery to Passive mode with specified power and duration. Negative power values charge (e.g., -2000 = charge at 2000W), positive values discharge (e.g., 1500 = discharge at 1500W).
   fields:
     device_id:
-      name: Device ID
-      description: Target device ID.
+      name: Battery
+      description: "Select the battery whose passive mode you want to change."
       required: true
-      example: "abcd1234efgh5678ijkl9012mnop3456"
       selector:
         device:
           integration: marstek_local_api
     power:
-      name: Power (W)
-      description: Target power in watts. Positive values discharge the battery, negative values charge.
+      name: Power
+      description: Power in watts. Negative values = charging (e.g., -2000 = charge at 2000W), positive values = discharging (e.g., 1500 = discharge at 1500W).
       required: true
-      example: -500
+      example: -2000
       selector:
         number:
-          min: -2500
-          max: 2500
-          step: 1
-          unit_of_measurement: "W"
-          mode: box
-    countdown:
-      name: Countdown (seconds)
-      description: Duration in seconds before reverting to the previous mode.
+          min: -10000
+          max: 10000
+          step: 100
+          unit_of_measurement: W
+    duration:
+      name: Duration
+      description: Duration in seconds (1-86400). For example, 3600 = 1 hour.
       required: true
-      example: 7200
+      example: 3600
       selector:
         number:
-          min: 0
+          min: 1
           max: 86400
           step: 60
-          unit_of_measurement: "s"
-          mode: box
+          unit_of_measurement: s

@@ -1,5 +1,8 @@
 # Marstek Local API for Home Assistant
 
+> **Firmware warning:** Marstek’s Local API firmware is still immature, so most glitches originate in the batteries, not here.
+> Report issues to Marstek unless you can clearly trace them to this project.
+
 Home Assistant integration that talks directly to Marstek Venus C/D/E batteries over the official Local API. It delivers local-only telemetry, mode control, and fleet-wide aggregation without relying on the Marstek cloud.
 
 ---
@@ -82,7 +85,7 @@ After setup you can return to **Settings → Devices & Services → Marstek Loca
 |  | `total_load_energy` | kWh | Lifetime load energy | 1x | 60 |
 | **Energy meter / CT** | `ct_phase_a_power`, `ct_phase_b_power`, `ct_phase_c_power` | W | Per-phase measurements (if CTs installed) | 5x | 300 |
 |  | `ct_total_power` | W | CT aggregate | 5x | 300 |
-| **Mode** | `operating_mode` | text | Auto / AI / Manual / Passive | 5x | 300 |
+| **Mode** | `operating_mode` | text | Current mode (read-only sensor) | 5x | 300 |
 | **PV (Venus D only)** | `pv_power`, `pv_voltage`, `pv_current` | W / V / A | MPPT telemetry | 5x | 300 |
 | **Network** | `wifi_rssi` | dBm | Wi-Fi signal | 10x | 600 |
 |  | `wifi_ssid`, `wifi_ip`, `wifi_gateway`, `wifi_subnet`, `wifi_dns` | text | Wi-Fi configuration | 10x | 600 |
@@ -91,61 +94,188 @@ After setup you can return to **Settings → Devices & Services → Marstek Loca
 
 Every sensor listed above also exists in an aggregated form under the **Marstek System** device whenever you manage multiple batteries together (prefixed with `system_`).
 
+### Mode Control Buttons
+
+Each battery exposes three button entities for quick mode switching:
+
+- `button.marstek_auto_mode` - Switch to Auto mode
+- `button.marstek_ai_mode` - Switch to AI mode
+- `button.marstek_manual_mode` - Switch to Manual mode
+
+The `sensor.marstek_operating_mode` displays the current active mode (Auto, AI, Manual, or Passive). **Passive mode** requires parameters (power and duration) and can only be activated via the `set_passive_mode` service (see Services section below).
+
 ---
 
 ## 6. Services
 
-### Data Management
+### Data Synchronization
 
 | Service | Description | Parameters |
 | --- | --- | --- |
-| `marstek_local_api.request_data_sync` | Triggers an immediate poll of every configured coordinator. | Optional `entry_id` to refresh a specific config entry. |
+| `marstek_local_api.request_data_sync` | Triggers an immediate poll of every configured coordinator. | Optional `entry_id` (specific config entry) and/or `device_id` (single battery). |
 
-### Manual Mode Control
+### Manual Mode Scheduling
 
-| Service | Description | Parameters |
-| --- | --- | --- |
-| `marstek_local_api.set_manual_schedule` | Configure Manual mode schedule for a device. | `device_id` (required), `schedule` (required, JSON object) |
-| `marstek_local_api.set_system_schedule` | Apply the same schedule to all batteries in a system. | `entry_id` (required), `schedule` (required, JSON object) |
+The integration provides services for configuring manual mode schedules. Manual mode allows you to define up to 10 time-based schedules that control when the battery charges/discharges and at what power level.
 
-**Schedule JSON Format:**
-```json
-{
-  "time_num": 0,
-  "start_time": "08:30",
-  "end_time": "20:30",
-  "week_set": 127,
-  "power": 100,
-  "enable": 1
-}
+> Select the **battery device** for all schedule services. The integration targets the correct device coordinator automatically.
+
+> **Note:** The Marstek Local API does not support reading schedule configurations back from the device. Schedules are write-only, so the integration cannot display currently configured schedules.
+
+| Service | Description |
+| --- | --- |
+| `marstek_local_api.set_manual_schedule` | Configure a single schedule slot (0-9) with time, days, and power settings. |
+| `marstek_local_api.set_manual_schedules` | Configure multiple schedule slots at once using YAML. |
+| `marstek_local_api.clear_manual_schedules` | Disable all 10 schedule slots. |
+| `marstek_local_api.set_system_schedule` | Apply the same schedule to all batteries in a system (legacy JSON format). |
+
+#### Setting a Single Schedule
+
+Configure one schedule slot at a time through the Home Assistant UI:
+
+```yaml
+service: marstek_local_api.set_manual_schedule
+data:
+  device_id: "1234567890abcdef1234567890abcdef"
+  time_num: 0  # Slot 0-9
+  start_time: "08:00"
+  end_time: "16:00"
+  days:
+    - mon
+    - tue
+    - wed
+    - thu
+    - fri
+  power: -2000  # Negative = charge limit (2000W), positive = discharge limit
+  enabled: true
 ```
 
-- `time_num`: Slot index 0-9 (Venus C/E supports 10 time slots)
-- `start_time`, `end_time`: Time in "HH:MM" format
-- `week_set`: 7-bit mask for days of week (1=Mon, 2=Tue, 4=Wed, 8=Thu, 16=Fri, 32=Sat, 64=Sun, 127=all days)
-- `power`: Target power in watts (positive=discharge, negative=charge)
-- `enable`: 1=active, 0=inactive
+#### Setting Multiple Schedules
+
+Configure several slots at once using YAML mode in Developer Tools → Services:
+
+```yaml
+service: marstek_local_api.set_manual_schedules
+data:
+  device_id: "1234567890abcdef1234567890abcdef"
+  schedules:
+    - time_num: 0
+      start_time: "08:00"
+      end_time: "16:00"
+      days: [mon, tue, wed, thu, fri]
+      power: -2000  # Charge at max 2000W
+      enabled: true
+    - time_num: 1
+      start_time: "18:00"
+      end_time: "22:00"
+      days: [mon, tue, wed, thu, fri]
+      power: 800  # Discharge at max 800W
+      enabled: true
+```
+
+#### Clearing All Schedules
+
+Remove all configured schedules by disabling all 10 slots:
+
+```yaml
+service: marstek_local_api.clear_manual_schedules
+data:
+  device_id: "1234567890abcdef1234567890abcdef"
+```
+
+> Expect this call to run for several minutes—the Marstek API accepts only one slot at a time and rejects most writes on the first attempt, so the integration walks through all ten slots with retries and back-off until the device finally accepts them.
+
+#### System-Wide Schedule (Legacy)
+
+Apply the same schedule to all batteries in a multi-device system using the JSON format:
+
+```yaml
+service: marstek_local_api.set_system_schedule
+data:
+  entry_id: "1234567890abcdef1234567890abcdef"
+  schedule:
+    time_num: 0
+    start_time: "08:30"
+    end_time: "20:30"
+    week_set: 127  # All days (1+2+4+8+16+32+64)
+    power: 100
+    enable: 1
+```
+
+#### Schedule Parameters
+
+- **time_num**: Schedule slot number (0-9). Each slot is independent.
+- **start_time** / **end_time**: 24-hour format (HH:MM). Schedules can span midnight.
+- **days**: List of weekdays (`mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun`). Defaults to all days.
+- **week_set**: 7-bit mask for days of week (1=Mon, 2=Tue, 4=Wed, 8=Thu, 16=Fri, 32=Sat, 64=Sun, 127=all days) - used by legacy `set_system_schedule`.
+- **power**: Power limit in watts. **Important:** Use negative values for charging (e.g., `-2000` = 2000W charge limit) and positive values for discharging (e.g., `800` = 800W discharge limit). Use `0` for no limit.
+- **enabled** / **enable**: Whether this schedule is active (`true`/`1` = active, `false`/`0` = inactive).
+- **device_id**: Home Assistant device ID of the target battery (required for device-specific services).
+- **entry_id**: Config entry ID for system-wide schedule (required for `set_system_schedule`).
+
+#### Important Notes
+
+- Changing the operating mode to Manual via the button entity will **not** activate any schedules automatically. You must configure schedules using the services above.
+- Multiple schedules can overlap. The device handles priority internally.
+- Schedule configurations are stored on the device and persist across reboots.
+- Since schedule reading is not supported, keep a copy of your schedule configuration in Home Assistant automations or scripts.
+
+You can call these services from **Developer Tools → Services** or use them in automations and scripts.
 
 ### Passive Mode Control
 
-| Service | Description | Parameters |
-| --- | --- | --- |
-| `marstek_local_api.set_passive_mode` | Set Passive mode with custom power and countdown. | `device_id` (required), `power` (required, W), `countdown` (required, seconds) |
+The `marstek_local_api.set_passive_mode` service enables **Passive mode** for direct power control. Passive mode allows you to charge or discharge the selected battery at a specific power level for a defined duration.
 
-**Example: Set passive mode to charge at 500W for 2 hours:**
+**Important:** Power values use signed integers:
+- **Negative values** = Charging (e.g., `-2000` means charge at 2000W)
+- **Positive values** = Discharging (e.g., `1500` means discharge at 1500W)
+
+#### Service Parameters
+
+| Parameter | Required | Type | Range | Description |
+| --- | --- | --- | --- | --- |
+| `device_id` | Yes | string | - | Battery to control. The integration communicates with the selected device directly. |
+| `power` | Yes | integer | -10000 to 10000 | Power in watts (negative = charge, positive = discharge) |
+| `duration` | Yes | integer | 1 to 86400 | Duration in seconds (max 24 hours) |
+
+#### Examples
+
+**Charge at 2000W for 1 hour:**
 ```yaml
 service: marstek_local_api.set_passive_mode
 data:
-  device_id: abcd1234efgh5678ijkl9012mnop3456
-  power: -500  # Negative for charge
-  countdown: 7200
+  device_id: "1234567890abcdef1234567890abcdef"
+  power: -2000  # Negative = charging
+  duration: 3600  # 1 hour in seconds
 ```
 
-You can call these services from **Developer Tools → Services** for advanced battery control.
+**Discharge at 1500W for 30 minutes:**
+```yaml
+service: marstek_local_api.set_passive_mode
+data:
+  device_id: "1234567890abcdef1234567890abcdef"
+  power: 1500  # Positive = discharging
+  duration: 1800  # 30 minutes in seconds
+```
+
+**Use in an automation (charge during cheap electricity hours):**
+```yaml
+automation:
+  - alias: "Charge battery during off-peak hours"
+    trigger:
+      - platform: time
+        at: "02:00:00"
+    action:
+      - service: marstek_local_api.set_passive_mode
+        data:
+          device_id: "1234567890abcdef1234567890abcdef"
+          power: -3000  # Charge at 3000W
+          duration: 14400  # 4 hours
+```
 
 ### UDP Reliability & Verification
 
-Marstek batteries communicate via UDP, which can drop packets. To ensure reliable operation, all control services automatically:
+Marstek batteries communicate via UDP, which can drop packets. To ensure reliable operation, control services for system-wide operations automatically:
 
 1. **Send the command** to the battery
 2. **Wait 2 seconds** for the battery to process the command
@@ -153,21 +283,7 @@ Marstek batteries communicate via UDP, which can drop packets. To ensure reliabl
 4. **Retry up to 3 times** if verification fails
 5. **Report success** only after confirming the battery actually changed state
 
-This ensures commands aren't silently lost due to packet drops. Each service call may take up to 12 seconds if multiple retries are needed, but this guarantees reliable control.
-
-### Future Controls
-
-The following control features are planned but not yet available due to API limitations:
-
-**Schedule Management:**
-- Retrieval of manual mode schedules (ES.GetMode API doesn't return schedule details)
-- Copy schedules between devices (requires schedule retrieval)
-
-**Power Management:**
-- Power limiting settings (API methods not documented)
-- Current limiting configuration (API methods not documented)
-
-These features will be added if/when Marstek extends the Local API to support them.
+This ensures commands aren't silently lost due to packet drops. The `set_system_schedule` service uses this verification mechanism.
 
 ---
 
@@ -278,10 +394,12 @@ automation:
 
 Note: the Marstek Local API is still relatively new and evolving. Behavior can vary between hardware revisions (v2/v3) and firmware versions (EMS and BMS). When reporting issues, always include diagnostic data (logs and the integration's diagnostic fields).
 
-Known issues (brief):
+Known issues:
+- Polling too often might cause connection to be lost to the CT002/3
 - Battery temperature may read 10× too high on older BMS versions.
 - API call timeouts (shown as warnings in the log).
 - Some API calls are not supported on older firmware — please ensure devices are updated before filing issues.
+- Manual mode requests must include a schedule: the API rejects `ES.SetMode` without `manual_cfg`, and because schedules are write-only the integration always sends a disabled placeholder in slot 9. Reapply your own slot 9 schedule after toggling Manual mode if needed.
 - Polling faster than 60s is not advised; devices have been reported to become unstable (e.g. losing CT003 connection).
  - Energy counters / capacity fields may be reported in Wh instead of kWh on certain firmware (values appear 1000× off).
  - `ES.GetStatus` can be unresponsive on some Venus E v3 firmwares (reported on v137 / v139).
@@ -299,17 +417,30 @@ Example warnings:
 Quick note for issue reports (EN): always attach the integration diagnostics export and relevant HA logs when filing a bug — it is required for effective troubleshooting.
 
 
-### Standalone connectivity test
+### Standalone device tool
 
-In the repository you'll find `manual_tests/test_discovery.py`, a small CLI that reuses the integration code to probe connectivity outside Home Assistant:
+In the repository you'll find testing tools in the `manual_tests/` directory that reuse the integration code to diagnose and control batteries outside Home Assistant:
 
 ```bash
 cd manual_tests
+
+# Legacy discovery tool
 python3 test_discovery.py              # broadcast discovery
-python3 test_discovery.py 192.168.7.101  # target a specific battery
+python3 test_discovery.py 192.168.1.100  # target a specific battery
+
+# New comprehensive test tool (if available)
+python3 test_tool.py discover                       # discover and print diagnostics
+python3 test_tool.py discover --ip 192.168.7.101    # target a specific IP
+python3 test_tool.py set-test-schedules             # apply test schedules
+python3 test_tool.py clear-schedules                # clear manual schedules
+python3 test_tool.py set-passive --power -2000 --duration 3600
+python3 test_tool.py set-mode auto --ip 192.168.7.101
+
+# Alternative API discovery tool
+python3 discover_api.py
 ```
 
-It discovers all reachable batteries, exercises every Local API method, and highlights network issues before you wire the devices into your HA instance.
+These tools discover reachable batteries, exercise every Local API method, and highlight network issues before you wire the devices into your HA instance.
 
 ---
 
@@ -323,13 +454,17 @@ Run the standalone integration test to verify connectivity and control functiona
 cd manual_tests
 python3 test_discovery.py              # Auto-discover and test all devices
 python3 test_discovery.py 192.168.1.100  # Test specific device
+
+# Or use the newer comprehensive test tool
+python3 test_tool.py discover
 ```
 
-The test script now includes:
+The test scripts include:
 - All sensor data retrieval
 - Passive mode control with verification
 - Manual mode schedule configuration
 - Mode restoration after tests
+- Firmware-specific value scaling validation
 
 ### Unit Tests
 
@@ -358,6 +493,8 @@ Version **1.1.0** adds limited control capabilities:
 - **HA-Controlled Mode**: Direct grid power control via number entity with automated Passive mode maintenance
 - **Control Tests**: Integration tests for mode switching and schedule configuration
 - **Unit Tests**: Comprehensive pytest coverage for all control functionality
+- **Enhanced UI**: Improved service definitions with user-friendly selectors
+- **Multiple Schedule Services**: Single, multiple, and clear schedule operations
 
 Version **1.0.0** focused on stable multi-device experience:
 - kWh-based energy reporting aligned with the Marstek UI

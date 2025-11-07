@@ -6,11 +6,12 @@ This test suite validates the integration components in isolation without requir
 
 ## Test Scripts
 
-### `test_discovery.py`
+### `test_tool.py`
 
-Standalone test script that:
+Standalone test tool that:
 - Discovers Marstek devices on the local network
 - Tests all API methods (device info, WiFi, BLE, battery, energy system, etc.)
+- Provides commands to apply/clear manual schedules, set passive mode, and switch operating modes
 - Applies firmware-specific value scaling
 - Calculates derived sensors (power in/out, battery state, available capacity)
 - Displays all sensor data in a formatted terminal output
@@ -28,6 +29,8 @@ Standalone test script that:
 ```bash
 cd marstek-local-api
 python3 manual_tests/test_discovery.py
+# Or use the newer comprehensive test tool
+python3 manual_tests/test_tool.py discover
 ```
 
 ### Expected Output
@@ -164,6 +167,8 @@ If you get import errors, ensure you're running from the repository root:
 ```bash
 cd /path/to/marstek-local-api
 python3 manual_tests/test_discovery.py
+# Or use the newer comprehensive test tool
+python3 manual_tests/test_tool.py discover
 ```
 
 ### No Devices Found

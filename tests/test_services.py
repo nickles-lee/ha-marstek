@@ -1,6 +1,7 @@
 """Tests for services."""
 from __future__ import annotations
 
+from datetime import time
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -41,14 +42,12 @@ async def test_set_manual_schedule_service(mock_hass, mock_coordinator, mock_dev
     service_call = Mock()
     service_call.data = {
         "device_id": "test_device_id",
-        "schedule": {
-            "time_num": 0,
-            "start_time": "08:00",
-            "end_time": "20:00",
-            "week_set": 127,
-            "power": 100,
-            "enable": 1,
-        },
+        "time_num": 0,
+        "start_time": time(8, 0),
+        "end_time": time(20, 0),
+        "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+        "power": 100,
+        "enabled": True,
     }
     
     # Call the service
@@ -57,10 +56,16 @@ async def test_set_manual_schedule_service(mock_hass, mock_coordinator, mock_dev
     # Verify API was called with correct config
     expected_config = {
         "mode": MODE_MANUAL,
-        "manual_cfg": service_call.data["schedule"],
+        "manual_cfg": {
+            "time_num": 0,
+            "start_time": "08:00",
+            "end_time": "20:00",
+            "week_set": 127,  # All days
+            "power": 100,
+            "enable": 1,
+        },
     }
     mock_coordinator.api.set_es_mode.assert_called_once_with(expected_config)
-    mock_coordinator.async_request_refresh.assert_called_once()
 
 
 async def test_set_passive_mode_service(mock_hass, mock_coordinator, mock_device_registry):
@@ -87,7 +92,7 @@ async def test_set_passive_mode_service(mock_hass, mock_coordinator, mock_device
     service_call.data = {
         "device_id": "test_device_id",
         "power": 500,
-        "countdown": 7200,
+        "duration": 7200,
     }
     
     # Call the service
@@ -102,7 +107,6 @@ async def test_set_passive_mode_service(mock_hass, mock_coordinator, mock_device
         },
     }
     mock_coordinator.api.set_es_mode.assert_called_once_with(expected_config)
-    mock_coordinator.async_request_refresh.assert_called_once()
 
 
 async def test_set_manual_schedule_service_failure(mock_hass, mock_coordinator, mock_device_registry):
@@ -127,14 +131,12 @@ async def test_set_manual_schedule_service_failure(mock_hass, mock_coordinator, 
     service_call = Mock()
     service_call.data = {
         "device_id": "test_device_id",
-        "schedule": {
-            "time_num": 0,
-            "start_time": "08:00",
-            "end_time": "20:00",
-            "week_set": 127,
-            "power": 100,
-            "enable": 1,
-        },
+        "time_num": 0,
+        "start_time": time(8, 0),
+        "end_time": time(20, 0),
+        "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+        "power": 100,
+        "enabled": True,
     }
     
     # Should raise HomeAssistantError
