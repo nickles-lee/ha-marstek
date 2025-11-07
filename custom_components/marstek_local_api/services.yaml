@@ -61,14 +61,14 @@ set_passive_mode:
           integration: marstek_local_api
     power:
       name: Power (W)
-      description: Target power in watts. Positive values charge the battery, negative values discharge.
+      description: Target power in watts. Positive values discharge the battery, negative values charge.
       required: true
-      example: 100
+      example: -500
       selector:
         number:
           min: -2500
           max: 2500
-          step: 50
+          step: 1
           unit_of_measurement: "W"
           mode: box
     countdown:

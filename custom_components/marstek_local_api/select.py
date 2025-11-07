@@ -10,10 +10,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers import entity_registry as er
 
 from .const import (
     DATA_COORDINATOR,
     DOMAIN,
+    HA_CONTROL_COUNTDOWN,
     MAX_RETRIES,
     MODE_AI,
     MODE_AUTO,
@@ -103,6 +105,8 @@ class MarstekOperatingModeSelect(CoordinatorEntity, SelectEntity):
 
         # Build config based on mode
         config = self._build_mode_config(option)
+        
+        _LOGGER.warning("📤 Setting operating mode to %s with config: %s", option, config)
 
         # Retry logic as per design document
         for attempt in range(MAX_RETRIES):
@@ -110,7 +114,7 @@ class MarstekOperatingModeSelect(CoordinatorEntity, SelectEntity):
                 success = await self.coordinator.api.set_es_mode(config)
 
                 if success:
-                    _LOGGER.info("Successfully set operating mode to %s", option)
+                    _LOGGER.info("✓ Successfully set operating mode to %s", option)
                     # Request immediate refresh
                     await self.coordinator.async_request_refresh()
                     return
@@ -162,13 +166,36 @@ class MarstekOperatingModeSelect(CoordinatorEntity, SelectEntity):
                 },
             }
         elif mode == MODE_PASSIVE:
-            # Default passive mode config (no power limit, 5 min countdown)
-            # Users can customize via service calls in the future
+            # Get the current passive mode power from the number entity
+            # Use relative reference: derive from this entity's unique_id
+            target_power = 0  # Default to 0 if entity not found
+            
+            # This select entity has unique_id like "AA:BB:CC:DD:EE:FF_operating_mode_select"
+            # The number entity has unique_id like "AA:BB:CC:DD:EE:FF_target_grid_power"
+            # Extract the device prefix and construct the number entity's unique_id
+            if self.unique_id and "_operating_mode_select" in self.unique_id:
+                device_prefix = self.unique_id.replace("_operating_mode_select", "")
+                number_unique_id = f"{device_prefix}_target_grid_power"
+                
+                entity_reg = er.async_get(self.hass)
+                entity_id = entity_reg.async_get_entity_id("number", DOMAIN, number_unique_id)
+                
+                if entity_id:
+                    state = self.hass.states.get(entity_id)
+                    if state and state.state not in ('unknown', 'unavailable'):
+                        try:
+                            target_power = int(float(state.state))
+                        except (ValueError, TypeError):
+                            target_power = 0
+            
+            # Ensure integer value
+            target_power = int(target_power)
+            
             return {
                 "mode": MODE_PASSIVE,
                 "passive_cfg": {
-                    "power": 0,
-                    "cd_time": 300,
+                    "power": target_power,
+                    "cd_time": int(HA_CONTROL_COUNTDOWN),  # 2 hour countdown
                 },
             }
 
@@ -228,6 +255,8 @@ class MarstekMultiDeviceOperatingModeSelect(CoordinatorEntity, SelectEntity):
 
         # Build config based on mode
         config = self._build_mode_config(option)
+        
+        _LOGGER.warning("📤 Setting operating mode to %s for device %s with config: %s", option, self.device_mac, config)
 
         # Retry logic as per design document
         for attempt in range(MAX_RETRIES):
@@ -235,7 +264,7 @@ class MarstekMultiDeviceOperatingModeSelect(CoordinatorEntity, SelectEntity):
                 success = await self.device_coordinator.api.set_es_mode(config)
 
                 if success:
-                    _LOGGER.info("Successfully set operating mode to %s for device %s", option, self.device_mac)
+                    _LOGGER.info("✓ Successfully set operating mode to %s for device %s", option, self.device_mac)
                     # Request immediate refresh
                     await self.coordinator.async_request_refresh()
                     return
@@ -289,13 +318,36 @@ class MarstekMultiDeviceOperatingModeSelect(CoordinatorEntity, SelectEntity):
                 },
             }
         elif mode == MODE_PASSIVE:
-            # Default passive mode config (no power limit, 5 min countdown)
-            # Users can customize via service calls in the future
+            # Get the current passive mode power from the number entity
+            # Use relative reference: derive from this entity's unique_id
+            target_power = 0  # Default to 0 if entity not found
+            
+            # This select entity has unique_id like "AA:BB:CC:DD:EE:FF_operating_mode_select"
+            # The number entity has unique_id like "AA:BB:CC:DD:EE:FF_target_grid_power"
+            # Extract the device prefix and construct the number entity's unique_id
+            if self.unique_id and "_operating_mode_select" in self.unique_id:
+                device_prefix = self.unique_id.replace("_operating_mode_select", "")
+                number_unique_id = f"{device_prefix}_target_grid_power"
+                
+                entity_reg = er.async_get(self.hass)
+                entity_id = entity_reg.async_get_entity_id("number", DOMAIN, number_unique_id)
+                
+                if entity_id:
+                    state = self.hass.states.get(entity_id)
+                    if state and state.state not in ('unknown', 'unavailable'):
+                        try:
+                            target_power = int(float(state.state))
+                        except (ValueError, TypeError):
+                            target_power = 0
+            
+            # Ensure integer value
+            target_power = int(target_power)
+            
             return {
                 "mode": MODE_PASSIVE,
                 "passive_cfg": {
-                    "power": 0,
-                    "cd_time": 300,
+                    "power": target_power,
+                    "cd_time": int(HA_CONTROL_COUNTDOWN),  # 2 hour countdown
                 },
             }
 

@@ -22,9 +22,10 @@ from datetime import timedelta
 import logging
 from typing import Any
 
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.core import HomeAssistant, callback, Event
+from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers import entity_registry as er
 
 from .const import (
     DOMAIN,
@@ -59,33 +60,114 @@ class MarstekHAControlCoordinator:
         self.entry_id = entry_id
         self.coordinator = coordinator
         self._remove_interval = None
+        self._remove_state_listeners = []
         self._device_states: dict[str, dict[str, Any]] = {}
         self._is_multi_device = isinstance(coordinator, MarstekMultiDeviceCoordinator)
 
     async def async_start(self) -> None:
         """Start the HA control coordinator."""
-        _LOGGER.info("Starting HA-Controlled mode coordinator for entry %s", self.entry_id)
+        _LOGGER.warning("🚀 Starting HA Battery control coordinator for entry %s (multi-device: %s)", 
+                       self.entry_id, self._is_multi_device)
         
-        # Set up periodic updates
+        # Set up periodic updates (every 2 minutes as backup)
         self._remove_interval = async_track_time_interval(
             self.hass,
             self._async_update_passive_mode,
             timedelta(seconds=HA_CONTROL_UPDATE_INTERVAL),
         )
+        _LOGGER.warning("📅 Periodic battery control update interval set to %d seconds", HA_CONTROL_UPDATE_INTERVAL)
+        
+        # Set up state change listeners for immediate updates
+        self._setup_state_listeners()
         
         # Do an initial update
+        _LOGGER.warning("🔄 Performing initial HA Battery control update")
         await self._async_update_passive_mode(None)
+        _LOGGER.warning("✅ HA Battery control coordinator startup complete")
 
     async def async_stop(self) -> None:
         """Stop the HA control coordinator."""
-        _LOGGER.info("Stopping HA-Controlled mode coordinator for entry %s", self.entry_id)
+        _LOGGER.info("Stopping HA Battery control coordinator for entry %s", self.entry_id)
         
         if self._remove_interval:
             self._remove_interval()
             self._remove_interval = None
+        
+        # Remove state listeners
+        for remove_listener in self._remove_state_listeners:
+            remove_listener()
+        self._remove_state_listeners.clear()
+
+    def _setup_state_listeners(self) -> None:
+        """Set up state change listeners for Target Grid Power entities."""
+        entity_reg = er.async_get(self.hass)
+        
+        if self._is_multi_device:
+            # Multi-device: listen to each device's number entity
+            _LOGGER.warning("🎧 Setting up state listeners for %d devices", len(self.coordinator.device_coordinators))
+            for mac in self.coordinator.device_coordinators.keys():
+                unique_id = f"{mac}_target_grid_power"
+                entity_id = entity_reg.async_get_entity_id("number", DOMAIN, unique_id)
+                
+                if entity_id:
+                    _LOGGER.warning("   👂 Listening to: %s (unique_id: %s)", entity_id, unique_id)
+                    remove = async_track_state_change_event(
+                        self.hass,
+                        entity_id,
+                        self._handle_state_change,
+                    )
+                    self._remove_state_listeners.append(remove)
+                else:
+                    _LOGGER.error("❌ Could not find entity for device %s (unique_id: %s)", mac, unique_id)
+        else:
+            # Single device: get the MAC and set up listener
+            device_mac = None
+            if "device" in self.coordinator.data:
+                device_mac = self.coordinator.data["device"].get("ble_mac") or self.coordinator.data["device"].get("wifi_mac")
+            
+            if device_mac:
+                unique_id = f"{device_mac}_target_grid_power"
+                entity_id = entity_reg.async_get_entity_id("number", DOMAIN, unique_id)
+                
+                if entity_id:
+                    _LOGGER.warning("🎧 Setting up state listener for single device: %s (unique_id: %s)", entity_id, unique_id)
+                    remove = async_track_state_change_event(
+                        self.hass,
+                        entity_id,
+                        self._handle_state_change,
+                    )
+                    self._remove_state_listeners.append(remove)
+                else:
+                    _LOGGER.error("❌ Could not find entity (unique_id: %s)", unique_id)
+            else:
+                _LOGGER.error("❌ Could not determine device MAC for state listener setup!")
+
+    async def _handle_state_change(self, event: Event) -> None:
+        """Handle Target Grid Power state changes."""
+        entity_id = event.data.get("entity_id")
+        new_state = event.data.get("new_state")
+        old_state = event.data.get("old_state")
+        
+        if not new_state or not old_state:
+            return
+        
+        # Ignore if value hasn't actually changed
+        if new_state.state == old_state.state:
+            return
+        
+        _LOGGER.warning(
+            "⚡ Target Grid Power changed on %s: %s → %s (triggering immediate update)",
+            entity_id,
+            old_state.state,
+            new_state.state,
+        )
+        
+        # Call the async update directly (we're already in an async context)
+        await self._async_update_passive_mode(None)
 
     async def _async_update_passive_mode(self, _now=None) -> None:
         """Update passive mode for all controlled devices."""
+        _LOGGER.warning("⏰ HA Battery control update triggered (periodic or immediate)")
         if self._is_multi_device:
             await self._async_update_multi_device()
         else:
@@ -101,14 +183,21 @@ class MarstekHAControlCoordinator:
                 break
         
         if not device_mac:
-            _LOGGER.debug("Could not determine device MAC for HA control")
+            _LOGGER.debug("Could not determine device MAC for HA Battery control")
             return
         
-        entity_id = f"number.{DOMAIN}_{device_mac}_target_grid_power".replace(":", "_").lower()
-        state = self.hass.states.get(entity_id)
+        # Find entity by unique_id using entity registry
+        entity_reg = er.async_get(self.hass)
+        unique_id = f"{device_mac}_target_grid_power"
+        entity_id = entity_reg.async_get_entity_id("number", DOMAIN, unique_id)
         
+        if not entity_id:
+            _LOGGER.debug("Number entity not found for unique_id %s", unique_id)
+            return
+        
+        state = self.hass.states.get(entity_id)
         if not state:
-            _LOGGER.debug("Number entity %s not found", entity_id)
+            _LOGGER.debug("Number entity %s not found in state registry", entity_id)
             return
         
         try:
@@ -117,24 +206,29 @@ class MarstekHAControlCoordinator:
             _LOGGER.warning("Invalid target power value: %s", state.state)
             return
         
-        # Check if mode was manually changed
+        # Check current mode - only control if in Passive mode
         mode_data = self.coordinator.data.get("mode", {})
         current_mode = mode_data.get("mode")
         
-        # If user manually changed mode away from Passive, stop HA control
-        if device_mac in self._device_states:
-            if self._device_states[device_mac].get("last_mode") == MODE_PASSIVE and current_mode != MODE_PASSIVE:
-                _LOGGER.info("Device mode manually changed from Passive, pausing HA control")
-                return
+        # Only maintain Passive mode when device is already in Passive mode
+        if current_mode != MODE_PASSIVE:
+            _LOGGER.debug("Device not in Passive mode (current: %s), skipping HA Battery control", current_mode)
+            return
         
-        # Set passive mode with target power
+        # Set passive mode with target power (ensure integers)
         config = {
             "mode": MODE_PASSIVE,
             "passive_cfg": {
-                "power": target_power,
-                "cd_time": HA_CONTROL_COUNTDOWN,
+                "power": int(target_power),
+                "cd_time": int(HA_CONTROL_COUNTDOWN),
             },
         }
+        
+        _LOGGER.info(
+            "Sending Passive mode command: power=%dW, countdown=%ds (2 hours)",
+            target_power,
+            HA_CONTROL_COUNTDOWN,
+        )
         
         try:
             # Import verification helper (lazy import to avoid circular dependency)
@@ -148,7 +242,7 @@ class MarstekHAControlCoordinator:
                 retry_delay=MODE_VERIFY_RETRY_DELAY,
             )
             if success:
-                _LOGGER.debug("Updated HA-Controlled mode: power=%dW", target_power)
+                _LOGGER.info("✓ HA Battery control updated successfully: power=%dW", target_power)
                 self._device_states[device_mac] = {
                     "last_power": target_power,
                     "last_mode": MODE_PASSIVE,
@@ -159,20 +253,27 @@ class MarstekHAControlCoordinator:
                 )
                 # Don't raise error - will retry on next interval (2 minutes)
         except Exception as err:
-            _LOGGER.error("Error updating HA-Controlled mode: %s", err)
+            _LOGGER.error("Error updating HA Battery control: %s", err)
 
     async def _async_update_multi_device(self) -> None:
         """Update passive mode for multiple devices."""
         if not isinstance(self.coordinator, MarstekMultiDeviceCoordinator):
             return
         
+        entity_reg = er.async_get(self.hass)
+        
         for mac, device_coordinator in self.coordinator.device_coordinators.items():
-            # Get the target power from the number entity
-            entity_id = f"number.{DOMAIN}_{mac}_target_grid_power".replace(":", "_").lower()
-            state = self.hass.states.get(entity_id)
+            # Get the target power from the number entity for this device
+            unique_id = f"{mac}_target_grid_power"
+            entity_id = entity_reg.async_get_entity_id("number", DOMAIN, unique_id)
             
+            if not entity_id:
+                _LOGGER.debug("Number entity not found for device %s (unique_id: %s)", mac, unique_id)
+                continue
+            
+            state = self.hass.states.get(entity_id)
             if not state:
-                _LOGGER.debug("Number entity %s not found for device %s", entity_id, mac)
+                _LOGGER.debug("Number entity %s not found in state registry for device %s", entity_id, mac)
                 continue
             
             try:
@@ -181,25 +282,31 @@ class MarstekHAControlCoordinator:
                 _LOGGER.warning("Invalid target power value for device %s: %s", mac, state.state)
                 continue
             
-            # Check if mode was manually changed
+            # Check current mode - only control if in Passive mode
             device_data = self.coordinator.get_device_data(mac)
             mode_data = device_data.get("mode", {})
             current_mode = mode_data.get("mode")
             
-            # If user manually changed mode away from Passive, stop HA control for this device
-            if mac in self._device_states:
-                if self._device_states[mac].get("last_mode") == MODE_PASSIVE and current_mode != MODE_PASSIVE:
-                    _LOGGER.info("Device %s mode manually changed from Passive, pausing HA control", mac)
-                    continue
+            # Only maintain Passive mode when device is already in Passive mode
+            if current_mode != MODE_PASSIVE:
+                _LOGGER.debug("Device %s not in Passive mode (current: %s), skipping HA Battery control", mac, current_mode)
+                continue
             
-            # Set passive mode with target power
+            # Set passive mode with target power (ensure integers)
             config = {
                 "mode": MODE_PASSIVE,
                 "passive_cfg": {
-                    "power": target_power,
-                    "cd_time": HA_CONTROL_COUNTDOWN,
+                    "power": int(target_power),
+                    "cd_time": int(HA_CONTROL_COUNTDOWN),
                 },
             }
+            
+            _LOGGER.info(
+                "Sending Passive mode command to device %s: power=%dW, countdown=%ds (2 hours)",
+                mac,
+                target_power,
+                HA_CONTROL_COUNTDOWN,
+            )
             
             try:
                 # Import verification helper (lazy import to avoid circular dependency)
@@ -213,7 +320,7 @@ class MarstekHAControlCoordinator:
                     retry_delay=MODE_VERIFY_RETRY_DELAY,
                 )
                 if success:
-                    _LOGGER.debug("Updated HA-Controlled mode for device %s: power=%dW", mac, target_power)
+                    _LOGGER.info("✓ HA Battery control updated successfully for device %s: power=%dW", mac, target_power)
                     self._device_states[mac] = {
                         "last_power": target_power,
                         "last_mode": MODE_PASSIVE,
@@ -224,5 +331,5 @@ class MarstekHAControlCoordinator:
                     )
                     # Don't raise error - will retry on next interval (2 minutes)
             except Exception as err:
-                _LOGGER.error("Error updating HA-Controlled mode for device %s: %s", mac, err)
+                _LOGGER.error("Error updating HA Battery control for device %s: %s", mac, err)
 

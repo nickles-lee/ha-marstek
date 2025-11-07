@@ -29,11 +29,6 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Marstek number entities based on a config entry."""
-    # Only create number entities if HA-Controlled mode is enabled in options
-    if not entry.options.get("ha_controlled_mode", False):
-        _LOGGER.debug("HA-Controlled mode not enabled, skipping number entities")
-        return
-
     coordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
 
     entities = []
@@ -66,7 +61,7 @@ class MarstekTargetGridPowerNumber(CoordinatorEntity, NumberEntity):
     _attr_native_unit_of_measurement = UnitOfPower.WATT
     _attr_native_min_value = HA_CONTROL_MIN_POWER
     _attr_native_max_value = HA_CONTROL_MAX_POWER
-    _attr_native_step = 50
+    _attr_native_step = 1
     _attr_mode = NumberMode.BOX
     _attr_icon = "mdi:transmission-tower"
 
@@ -80,7 +75,8 @@ class MarstekTargetGridPowerNumber(CoordinatorEntity, NumberEntity):
         self._attr_has_entity_name = True
         device_mac = entry.data.get("ble_mac") or entry.data.get("wifi_mac")
         self._attr_unique_id = f"{device_mac}_target_grid_power"
-        self._attr_name = "Target grid power"
+        self._attr_name = "Passive mode power"
+        self._attr_entity_description = "Positive = discharge, negative = charge"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device_mac)},
             name=f"Marstek {entry.data['device']}",
@@ -98,7 +94,8 @@ class MarstekTargetGridPowerNumber(CoordinatorEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         """Set new target power value."""
-        self._attr_native_value = value
+        # Store as integer to ensure no decimal display
+        self._attr_native_value = int(value)
         self.async_write_ha_state()
         _LOGGER.info("Target grid power set to %dW", int(value))
 
@@ -115,7 +112,7 @@ class MarstekMultiDeviceTargetGridPowerNumber(CoordinatorEntity, NumberEntity):
     _attr_native_unit_of_measurement = UnitOfPower.WATT
     _attr_native_min_value = HA_CONTROL_MIN_POWER
     _attr_native_max_value = HA_CONTROL_MAX_POWER
-    _attr_native_step = 50
+    _attr_native_step = 1
     _attr_mode = NumberMode.BOX
     _attr_icon = "mdi:transmission-tower"
 
@@ -132,7 +129,8 @@ class MarstekMultiDeviceTargetGridPowerNumber(CoordinatorEntity, NumberEntity):
         self.device_mac = device_mac
         self._attr_has_entity_name = True
         self._attr_unique_id = f"{device_mac}_target_grid_power"
-        self._attr_name = "Target grid power"
+        self._attr_name = "Passive mode power"
+        self._attr_entity_description = "Positive = discharge, negative = charge"
 
         # Extract last 4 chars of MAC for device name differentiation
         mac_suffix = device_mac.replace(":", "")[-4:]
@@ -154,7 +152,8 @@ class MarstekMultiDeviceTargetGridPowerNumber(CoordinatorEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         """Set new target power value."""
-        self._attr_native_value = value
+        # Store as integer to ensure no decimal display
+        self._attr_native_value = int(value)
         self.async_write_ha_state()
         _LOGGER.info("Target grid power set to %dW for device %s", int(value), self.device_mac)
 
