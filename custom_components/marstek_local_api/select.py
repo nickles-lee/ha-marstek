@@ -7,6 +7,7 @@ import logging
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -138,6 +139,13 @@ class MarstekOperatingModeSelect(CoordinatorEntity, SelectEntity):
                 await asyncio.sleep(RETRY_DELAY)
 
         _LOGGER.error("Failed to set operating mode after %d attempts", MAX_RETRIES)
+
+    async def _refresh_mode_data(self) -> None:
+        """Force a coordinator refresh so entities reflect the latest state."""
+        try:
+            await self.coordinator.async_refresh()
+        except Exception as err:
+            _LOGGER.warning("Failed to refresh data after mode change: %s", err)
 
     def _build_mode_config(self, mode: str) -> dict:
         """Build configuration for the selected mode."""
@@ -290,6 +298,26 @@ class MarstekMultiDeviceOperatingModeSelect(CoordinatorEntity, SelectEntity):
                 await asyncio.sleep(RETRY_DELAY)
 
         _LOGGER.error("Failed to set operating mode for device %s after %d attempts", self.device_mac, MAX_RETRIES)
+
+    async def _refresh_mode_data(self) -> None:
+        """Force a refresh on the device and aggregate coordinators."""
+        try:
+            await self.device_coordinator.async_refresh()
+        except Exception as err:
+            _LOGGER.warning(
+                "Failed to refresh device %s data after mode change: %s",
+                self.device_mac,
+                err,
+            )
+
+        try:
+            await self.coordinator.async_refresh()
+        except Exception as err:
+            _LOGGER.warning(
+                "Failed to refresh aggregate data after mode change for %s: %s",
+                self.device_mac,
+                err,
+            )
 
     def _build_mode_config(self, mode: str) -> dict:
         """Build configuration for the selected mode."""
